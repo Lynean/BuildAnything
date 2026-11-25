@@ -55,10 +55,10 @@ What a MuJoCo tab replays: recorded runs from two of the projects.
 
 | Stair climber: 24° nose-first descent | Stair climber: 24° rear-first ascent | MA-6 arm: the poses checked |
 |---|---|---|
-| ![The RB4107 stair climber carrying a seat down a 24 degree stair, the seat held level](docs/images/stair-climber-descent.gif) | ![The stair climber climbing the same stair rear first](docs/images/stair-climber-ascent.gif) | ![The MA-6 arm's CAD model moving through five poses](docs/images/ma6-arm-poses.gif) |
-| The robot's main job: carrying the seat down while the levelling keeps it within 5°. | Going up, rear first, with the front segment held straight. | The bought kit's real joints in five poses, drawn as simple boxes, used to check each servo's load. |
+| ![The RB4107 stair climber carrying a seat down a 24 degree stair, the seat held level](docs/images/stair-climber-descent.gif) | ![The stair climber climbing the same stair rear first](docs/images/stair-climber-ascent.gif) | ![The MA-6 arm, rendered from its CAD model, moving through four poses](docs/images/ma6-arm-poses.gif) |
+| The robot's main job: carrying the seat down while the levelling keeps it within 5°. | Going up, rear first, with the front segment held straight. | The bought kit's arm, rendered from its CAD model, in the poses used to check each servo's load. |
 
-<sub>Both stair runs come from the Simulation Engineer's model, run in the app's sandbox (60 s each, shown at 4× speed). The arm poses come from MuJoCo on the imported CAD model.</sub>
+<sub>Both stair runs come from the Simulation Engineer's model, run in the app's sandbox (60 s each, shown at 4× speed). The arm is rendered from the kit's imported CAD model.</sub>
 
 The examples that ship with the Skill: **Fusion**, **MuJoCo**, **KiCad** (ERC and DRC through kicad-cli), **MATLAB** (batch run, figures) and **data and plots** (CSV statistics).
 
