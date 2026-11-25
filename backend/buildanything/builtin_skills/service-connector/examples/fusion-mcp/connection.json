@@ -1,0 +1,23 @@
+{
+  "id": "fusion-mcp",
+  "name": "Autodesk Fusion (MCP)",
+  "summary": "Talks to Fusion's MCP Server add-in on this computer while Fusion is open. The tool names below are placeholders: list the real ones with mcp_server_tools before proposing. Reading the design runs at once; anything that changes the design waits for the person every time.",
+  "kind": "mcp",
+  "mcp_target": "http://127.0.0.1:PORT/mcp",
+  "fields": [],
+  "auth": {"type": "none"},
+  "setup": [
+    "Open Fusion with your design.",
+    "In Fusion, open Preferences, General, API and tick Fusion MCP Server. Note the port it shows.",
+    "Tell External Service the port so it can fill in the address, then approve the connection and press Test.",
+    "Keep Fusion open whenever agents or the Fusion tab should use it."
+  ],
+  "departments": ["Mechanical"],
+  "operations": [
+    {"name": "describe_design", "description": "Bodies, components and parameters of the open design (read-only).", "writes": false, "mcp_tool": "REPLACE_WITH_REAL_READ_TOOL"},
+    {"name": "run_script", "description": "Run a script that changes the design. Waits for the person every time.", "writes": true, "mcp_tool": "REPLACE_WITH_REAL_SCRIPT_TOOL",
+     "params": [{"name": "script", "description": "The Fusion API script to run."}]}
+  ],
+  "check": "describe_design",
+  "sources": []
+}

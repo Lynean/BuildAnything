@@ -1,0 +1,30 @@
+{
+  "id": "altium-365",
+  "name": "Altium 365 (through Nexar)",
+  "summary": "Reads your Altium 365 workspaces and their design data through Altium's Nexar API, after you sign in. Read-only. Design data only appears if your projects are saved in an Altium 365 workspace. Confirmed from Nexar's documentation: the sign-in and token addresses, the scopes openid design.domain user.access, the GraphQL address, and the desWorkspaces query. Not confirmed: which redirect addresses Nexar accepts, and the exact field names (check them in Nexar's schema viewer, https://api.nexar.com/ui/voyager).",
+  "kind": "api",
+  "base_url": "https://api.nexar.com",
+  "fields": [
+    {"id": "client_id", "label": "Client ID", "where": "portal.nexar.com, Apps, your app, Authorization tab, Credentials", "secret": false},
+    {"id": "client_secret", "label": "Client secret", "where": "portal.nexar.com, Apps, your app, Authorization tab, Credentials"}
+  ],
+  "auth": {"type": "oauth2", "oauth": {"grant": "authorization_code", "authorize_url": "https://identity.nexar.com/connect/authorize", "token_url": "https://identity.nexar.com/connect/token",
+           "scopes": ["openid", "design.domain", "user.access"], "client_id_field": "client_id", "client_secret_field": "client_secret"}},
+  "setup": [
+    "Make sure your projects are in an Altium 365 workspace: in Altium Designer, sign in to your workspace and save the projects there. Without it, Nexar has no design data to return.",
+    "Sign in at portal.nexar.com with your Altium account. New accounts get an Evaluation App with design access; open it from Apps.",
+    "In the app's Authorization tab, add the sign-in return address shown on this screen to the allowed redirect URLs. (Nexar's documentation doesn't say which addresses it accepts; if it refuses this one, tell External Service.)",
+    "Copy the Client ID and Client secret from the Credentials section into the fields here.",
+    "Press Sign in, sign in with your Altium account in the window that opens, then come back and press Test."
+  ],
+  "departments": ["Electrical", "Procurement"],
+  "operations": [
+    {"name": "list_workspaces", "description": "The Altium 365 workspaces your account belongs to. Empty means no workspace is linked.", "writes": false, "method": "POST", "path": "/graphql",
+     "body": {"query": "query { desWorkspaces { url name } }"}},
+    {"name": "run_query", "description": "Any read-only GraphQL query on Altium 365 design data (des... queries), such as a workspace's projects or library. Check field names in Nexar's schema viewer first.", "writes": false, "method": "POST", "path": "/graphql",
+     "body": {"query": "{query}", "variables": "{variables}"},
+     "params": [{"name": "query", "description": "A GraphQL query (never a mutation)."}, {"name": "variables", "type": "object", "description": "Its variables, if any.", "required": false}]}
+  ],
+  "check": "list_workspaces",
+  "sources": ["https://support.nexar.com/support/solutions/articles/101000471994-authorization-code-flow", "https://support.nexar.com/support/solutions/articles/101000477082-working-with-altium-365-design-data", "https://support.nexar.com/support/solutions/articles/101000452099-application-client-id-client-secret"]
+}

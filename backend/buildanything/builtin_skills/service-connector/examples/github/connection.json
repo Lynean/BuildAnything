@@ -1,0 +1,24 @@
+{
+  "id": "github",
+  "name": "GitHub",
+  "summary": "Reads your GitHub repositories and their issues. Read-only: it can't push, comment or change anything.",
+  "kind": "api",
+  "base_url": "https://api.github.com",
+  "fields": [{"id": "token", "label": "Personal access token", "where": "github.com, Settings, Developer settings, Personal access tokens, Fine-grained tokens: give it read-only access to the repositories you choose."}],
+  "auth": {"type": "bearer", "field": "token"},
+  "setup": [
+    "Approve this connection below.",
+    "On github.com open Settings, Developer settings, Personal access tokens, Fine-grained tokens, and press Generate new token.",
+    "Choose the repositories, and under Repository permissions set Contents and Issues to Read-only. Nothing else is needed.",
+    "Copy the token and paste it into the Personal access token field here, then press Test."
+  ],
+  "departments": ["Software"],
+  "operations": [
+    {"name": "who_am_i", "description": "The account the token belongs to.", "writes": false, "method": "GET", "path": "/user"},
+    {"name": "list_repos", "description": "Your repositories, newest first.", "writes": false, "method": "GET", "path": "/user/repos", "query": {"sort": "updated", "per_page": "30"}},
+    {"name": "list_issues", "description": "Open issues in one repository.", "writes": false, "method": "GET", "path": "/repos/{owner}/{repo}/issues", "query": {"state": "open", "per_page": "50"},
+     "params": [{"name": "owner", "description": "The account or organisation, such as octocat."}, {"name": "repo", "description": "The repository name."}]}
+  ],
+  "check": "who_am_i",
+  "sources": ["https://docs.github.com/en/rest", "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"]
+}

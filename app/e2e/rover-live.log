@@ -1,0 +1,28 @@
+05:00:50 Scenario: rover | board: none | fusion: false
+05:00:51 Project: desk-rover-11-22t05-00-530ac4
+05:01:07 [G0 $0.00] concept -> - | Approve the concept when it looks right. 3 questions are still open.
+05:01:10 Student: I want it to drive on my desk and the floor, and turn away when someth
+05:01:48 [G0 $0.06] concept -> - | Approve the concept when it looks right. 3 questions are still open.
+05:01:49 Student: just keep it simple please, battery is the AA box from the kit. ok I t
+05:02:26 [G0 $0.10] concept -> - | Approve the concept when it looks right. 3 questions are still open.
+05:05:58 [G1 $0.30] claims -> Review queue | Review 6 sourced claims.
+05:06:11 Review queue: approved 6
+05:06:11 [G1 $0.30] gate -> - | Sources are reviewed. Continue to Plan on the Journey screen to start the plan.
+05:06:16 Approving: Continue to Plan
+05:07:46 [G2 $0.34] findings -> - | Decide 2 serious problems the Verifier found.
+05:09:15 [G2 $0.38] findings -> - | Check that 2 fixes worked, then mark them fixed.
+05:09:20 [G2 $0.38] plan -> Review queue | Review 16 requirements and tasks.
+05:09:50 Review queue: approved 16
+05:09:50 [G2 $0.38] gate -> - | The plan is reviewed. Continue to Agree on the Journey screen to brief the departments.
+05:09:55 Approving: Continue to Agree
+05:14:56 [G3 $0.63] gate_waiting -> Interface | To finish Agree: These still need to acknowledge the current version: computer (ROVER_STATUS). And 1 more on t
+05:15:08 [G3 $0.63] gate_waiting -> Tests | To finish Agree: Approve 9 tests.
+05:15:16 [G3 $0.63] gate -> - | Agree is done. Continue to Check on the Journey screen.
+05:15:21 Approving: Continue to Check
+05:17:51 [G4 $0.72] question -> Review queue | Electrical needs an answer from you: If available, provide the kit purchase listing or any markings on the mot
+05:18:08 [G4 $0.74] gate_waiting -> Electrical | To finish Check: Review 15 components. And 3 more on the Journey screen.
+05:18:21 Electrical: confirmed 3
+05:22:47 [G4 $0.93] question -> Review queue | Electrical needs an answer from you: The connection draft requires voltages for both terminals of each supplie
+05:23:04 [G4 $0.94] gate_waiting -> Gates | To finish Check: Upload documents for: Arduino Uno R3 (revision unverified) (datasheet); Arduino Uno R3 (revis
+05:23:15 Uploaded datasheet for Arduino Uno R3 (revision unverified)
+05:23:30 Marked as having no datasheet: Existing 2WD TT chassis kit with 4×AA holder com_d75b9d7ced

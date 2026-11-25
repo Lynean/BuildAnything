@@ -1,0 +1,36 @@
+# Your data: projects, backups and hardware backups stay on this computer.
+/projects/
+/projects-disconnected/
+/backups/
+/hardware-backups/
+# Other people's files: a bought kit's CAD and datasheets, and a vendored add-in with its own repository.
+/assets/
+/vendor/
+# Not part of the app's code.
+/phase0/
+/bench/
+/.verify-toolchain/
+/dimensions.webp
+
+# Dependencies and build output.
+node_modules/
+.venv/
+/app/dist/
+*.tsbuildinfo
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Keys and secrets, wherever they are.
+.env
+.env.*
+*.pem
+*.key
+credentials*.json
+secrets*
+
+# Editors and the OS.
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

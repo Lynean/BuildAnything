@@ -1,0 +1,236 @@
+[
+  {
+    "id": "git",
+    "name": "Git",
+    "support": "Official",
+    "capabilities": [
+      "vcs.commit"
+    ],
+    "tool": "git",
+    "summary": "Version history for every project.",
+    "steps": [
+      {
+        "instruction": "Download and install Git for your system.",
+        "expect": "The installer finishes without errors.",
+        "primary": "https://git-scm.com/downloads",
+        "backup": "https://git-scm.com/book/en/v2/Getting-Started-Installing-Git"
+      },
+      {
+        "instruction": "Open a new terminal, then press Check.",
+        "expect": "The app finds Git and shows its version.",
+        "primary": "https://git-scm.com/docs/git-version",
+        "backup": "https://git-scm.com/book/en/v2/Getting-Started-Installing-Git",
+        "check": "git"
+      }
+    ]
+  },
+  {
+    "id": "esp-idf",
+    "name": "ESP-IDF",
+    "support": "Official",
+    "capabilities": [
+      "fw.build",
+      "fw.flash",
+      "serial.monitor"
+    ],
+    "tool": "idf",
+    "summary": "Espressif's framework for building and flashing ESP32 firmware.",
+    "steps": [
+      {
+        "instruction": "Install ESP-IDF using Espressif's installer for your system.",
+        "expect": "The installer finishes and adds an ESP-IDF terminal.",
+        "primary": "https://docs.espressif.com/projects/esp-idf/en/stable/esp32/get-started/index.html",
+        "backup": "https://github.com/espressif/esp-idf"
+      },
+      {
+        "instruction": "Start this app from the ESP-IDF terminal so it can find the tools, then press Check.",
+        "expect": "The app finds idf.py and shows its version.",
+        "primary": "https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/idf-py.html",
+        "backup": "https://github.com/espressif/esp-idf",
+        "check": "idf"
+      }
+    ]
+  },
+  {
+    "id": "platformio",
+    "name": "PlatformIO",
+    "support": "Official",
+    "capabilities": [
+      "fw.build",
+      "fw.flash",
+      "serial.monitor"
+    ],
+    "tool": "pio",
+    "summary": "Builds and flashes firmware for many boards.",
+    "steps": [
+      {
+        "instruction": "Install PlatformIO Core.",
+        "expect": "The install command finishes without errors.",
+        "primary": "https://docs.platformio.org/en/latest/core/installation/index.html",
+        "backup": "https://github.com/platformio/platformio-core"
+      },
+      {
+        "instruction": "Open a new terminal, then press Check.",
+        "expect": "The app finds pio and shows its version.",
+        "primary": "https://docs.platformio.org/en/latest/core/userguide/index.html",
+        "backup": "https://github.com/platformio/platformio-core",
+        "check": "pio"
+      }
+    ]
+  },
+  {
+    "id": "arduino-cli",
+    "name": "Arduino CLI",
+    "support": "Official",
+    "capabilities": [
+      "fw.build",
+      "fw.flash"
+    ],
+    "tool": "arduino-cli",
+    "summary": "Command-line builds and uploads for Arduino-compatible boards.",
+    "steps": [
+      {
+        "instruction": "Install Arduino CLI.",
+        "expect": "The arduino-cli program is on your system.",
+        "primary": "https://arduino.github.io/arduino-cli/latest/installation/",
+        "backup": "https://github.com/arduino/arduino-cli"
+      },
+      {
+        "instruction": "Open a new terminal, then press Check.",
+        "expect": "The app finds arduino-cli and shows its version.",
+        "primary": "https://arduino.github.io/arduino-cli/latest/getting-started/",
+        "backup": "https://github.com/arduino/arduino-cli",
+        "check": "arduino-cli"
+      }
+    ]
+  },
+  {
+    "id": "kicad",
+    "name": "KiCad",
+    "support": "Official",
+    "capabilities": [
+      "eda.erc",
+      "eda.drc"
+    ],
+    "tool": "kicad-cli",
+    "summary": "Open-source circuit and PCB design, with rule checks from the command line.",
+    "steps": [
+      {
+        "instruction": "Install KiCad.",
+        "expect": "KiCad opens normally.",
+        "primary": "https://www.kicad.org/download/",
+        "backup": "https://docs.kicad.org/"
+      },
+      {
+        "instruction": "Add KiCad's bin folder to your PATH, open a new terminal, then press Check.",
+        "expect": "The app finds kicad-cli and shows its version.",
+        "primary": "https://docs.kicad.org/",
+        "backup": "https://www.kicad.org/help/",
+        "check": "kicad-cli"
+      }
+    ]
+  },
+  {
+    "id": "ngspice",
+    "name": "ngspice",
+    "support": "Official",
+    "capabilities": [
+      "spice.run"
+    ],
+    "tool": "ngspice",
+    "summary": "Circuit simulation.",
+    "steps": [
+      {
+        "instruction": "Install ngspice and add it to your PATH.",
+        "expect": "The ngspice program is on your system.",
+        "primary": "https://ngspice.sourceforge.io/download.html",
+        "backup": "https://ngspice.sourceforge.io/docs.html"
+      },
+      {
+        "instruction": "Open a new terminal, then press Check.",
+        "expect": "The app finds ngspice and shows its version.",
+        "primary": "https://ngspice.sourceforge.io/docs.html",
+        "backup": "https://ngspice.sourceforge.io/resources.html",
+        "check": "ngspice"
+      }
+    ]
+  },
+  {
+    "id": "freecad",
+    "name": "FreeCAD",
+    "support": "Official app",
+    "capabilities": [
+      "cad.run_script",
+      "cad.export_step",
+      "cad.mass_properties",
+      "fea.solve"
+    ],
+    "tool": "freecadcmd",
+    "summary": "Open-source CAD that can be scripted without opening its window.",
+    "steps": [
+      {
+        "instruction": "Install FreeCAD.",
+        "expect": "FreeCAD opens normally.",
+        "primary": "https://www.freecad.org/downloads.php",
+        "backup": "https://wiki.freecad.org/Installing_on_Windows"
+      },
+      {
+        "instruction": "Add FreeCAD's bin folder to your PATH, open a new terminal, then press Check.",
+        "expect": "The app finds freecadcmd and shows its version.",
+        "primary": "https://wiki.freecad.org/Command_line_usage",
+        "backup": "https://wiki.freecad.org/Python_scripting_tutorial",
+        "check": "freecadcmd"
+      }
+    ]
+  },
+  {
+    "id": "fusion",
+    "name": "Fusion",
+    "support": "Official MCP server",
+    "capabilities": [
+      "cad.run_script",
+      "cad.export_step",
+      "cad.mass_properties",
+      "cad.clearance"
+    ],
+    "summary": "Fusion's built-in MCP server, which runs on this computer while Fusion is open.",
+    "steps": [
+      {
+        "instruction": "Open Fusion. Go to Preferences, General, API, tick Fusion MCP Server (runs locally on this device), and note the port shown there. Update Fusion if the option is missing.",
+        "expect": "The option is ticked and you can see the port number.",
+        "primary": "https://help.autodesk.com/cloudhelp/ENU/ADSKMCP-FusionDesktopMcp/files/ADSKMCP_FusionDesktopMcp_connecting_to_the_fusion_mcp_server_html.html",
+        "backup": "https://help.autodesk.com/cloudhelp/ENU/ADSKMCP-FusionDesktopMcp/files/ADSKMCP_FusionDesktopMcp_troubleshooting_html.html"
+      },
+      {
+        "instruction": "Open a document in Fusion. Then enter the port under Connect Fusion on this page and press Connect.",
+        "expect": "Fusion appears under Connected as Healthy.",
+        "primary": "https://help.autodesk.com/cloudhelp/ENU/ADSKMCP-FusionDesktopMcp/files/ADSKMCP_FusionDesktopMcp_connecting_to_the_fusion_mcp_server_html.html",
+        "backup": "https://help.autodesk.com/cloudhelp/ENU/ADSKMCP-FusionDesktopMcp/files/ADSKMCP_FusionDesktopMcp_troubleshooting_html.html"
+      }
+    ]
+  },
+  {
+    "id": "solidworks",
+    "name": "SolidWorks",
+    "support": "No official MCP server",
+    "capabilities": [
+      "cad.export_step",
+      "cad.make_drawing"
+    ],
+    "summary": "Connect a community MCP server if you trust it, or exchange STEP files by hand.",
+    "steps": [
+      {
+        "instruction": "Choose a community MCP server after reviewing its code, or use STEP file exchange.",
+        "expect": "You've picked a route you're comfortable with.",
+        "primary": "https://help.solidworks.com/",
+        "backup": "https://modelcontextprotocol.io/"
+      },
+      {
+        "instruction": "If you're using a server, add it under Add an MCP server. It can break across SolidWorks versions.",
+        "expect": "The server's tools are listed, or you've chosen file exchange.",
+        "primary": "https://modelcontextprotocol.io/",
+        "backup": "https://help.solidworks.com/"
+      }
+    ]
+  }
+]

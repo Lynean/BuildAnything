@@ -1,0 +1,29 @@
+{
+ "note": "What the first hand-driven run on 2026-11-09 achieved, for comparison. It is not a target.",
+ "checks": {
+  "reached_g4": true,
+  "g4_design_complete": false,
+  "power_supply": false,
+  "protection": false,
+  "servos": true,
+  "wiring": false,
+  "seven_pins": false,
+  "pins_match": false,
+  "limits_read": false,
+  "parts_listed": true,
+  "parts_modelled": false,
+  "print_files": false,
+  "no_cad_pileup": false,
+  "plastic_mass": false,
+  "app_sends": false,
+  "real_flash": true,
+  "board_received": false,
+  "no_terminal": false,
+  "no_stale": false,
+  "sources_relevant": false,
+  "web_sources": false,
+  "no_dead_ends": false,
+  "no_crash": false,
+  "rehearsal": true
+ }
+}

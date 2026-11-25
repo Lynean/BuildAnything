@@ -1,0 +1,29 @@
+[project]
+name = "buildanything-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "cadquery>=2.8.0",
+    "defusedxml>=0.7.1",
+    "esptool>=5.6.0",
+    "fastapi>=0.162.2",
+    "fastmcp>=4.1.6",
+    "keyring>=25.7.0",
+    "mujoco>=4.0.1",
+    "openai-agents>=0.24.0",
+    "pyflakes>=4.1.0",
+    "pypdf>=7.0.0",
+    "pyserial>=3.5",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = [".", "tests"]

@@ -1,0 +1,75 @@
+00:03:57 Scenario: rover | board: none | fusion: false
+00:03:57 Project: desk-rover-11-22t05-00-530ac4
+00:03:58 [G4 $1.72] bug -> Electrical | Electrical found a tool problem: The generated packet header requires 64-bit double and stops the Uno build: “
+00:05:09 Electrical replied: I’ve requested three cheaper modules and mapped their connections at block level below. Exact pin-to-pin wiring and the servo power supply still need checking b
+00:05:09 [G4 $1.72] bug -> Electrical | Electrical found a tool problem: The generated packet header requires 64-bit double and stops the Uno build: “
+00:09:36 Electrical replied: The build now passes, so you don’t need to click or change anything. Please leave the rover unwired and unflashed while the remaining hardware checks are comple
+00:09:36 [G4 $1.88] gate_waiting -> Gates | To finish Check: Upload documents for: Arduino Uno R3 (revision unverified) (board user manual or board schema
+00:10:02 No datasheet found for Pololu 2123 S7V8F5
+00:10:09 Marked as having no datasheet: Pololu 2123 S7V8F5 com_f1ba91fa27
+00:10:20 Datasheet link failed for Pololu 2130 DRV8833 carrier
+00:10:27 Marked as having no datasheet: Pololu 2130 DRV8833 carrier com_8382890ec5
+00:10:33 Uploaded datasheet for HC-SR04
+00:10:38 Uploaded datasheet for Adafruit 931 SSD1306 128x32 I2C OLED
+00:10:58 No datasheet found for Pololu 2458 QTR-1A 2-pack
+00:11:05 Marked as having no datasheet: Pololu 2458 QTR-1A 2-pack com_25eb8dcbb8
+00:11:13 Marked as having no datasheet: LM393 infrared wheel-speed sensor module with 20-slot encoder disc, 2 sets com_692a229d9e
+00:11:15 Said there's no board user manual or board schematic for Arduino Uno R3 (revision unverified)
+00:11:15 [G4 $1.96] gate_waiting -> Electrical | To finish Check: Check the datasheet for Arduino Uno R3 (revision unverified): its exact part number isn't in 
+00:11:21 Reading limits for: Arduino Uno R3 (revision unverified)
+00:12:21 [G4 $1.96] gate_waiting -> Electrical | To finish Check: Review 8 datasheet limits. And 9 more on the Journey screen.
+00:12:32 Electrical: confirmed the limits found on the page, for 1 parts
+00:14:17 Electrical: confirmed 57
+00:14:21 [G4 $1.96] gate_waiting -> Mechanical | To finish Check: Add or dismiss 9 suggested parts on the Mechanical screen. And 7 more on the Journey screen.
+00:14:51 Mechanical: added 14
+00:14:51 [G4 $1.98] gate_waiting -> Mechanical | To finish Check: Set the parts budget on the Mechanical screen. And 5 more on the Journey screen.
+00:14:53 [G4 $1.98] gate_waiting -> Procurement | To finish Check: The parts come to about SGD 134.51, over your SGD 40 budget. Raise the budget, or ask Procure
+00:15:52 Procurement replied: The chassis kit is already yours, so it should not count toward the new-parts budget; the edge-sensor records also conflict on whether you need two or four. I’v
+00:16:21 [G4 $2.08] gate_waiting -> Procurement | To finish Check: The parts come to about SGD 85.22, over your SGD 40 budget. Raise the budget, or ask Procurem
+00:18:04 Procurement replied: I haven’t changed the agreed parts because the cheaper modules aren’t confirmed compatible, and the edge-sensor count is still disputed. The list has one 2-pack
+00:18:37 [G4 $2.27] question -> Review queue | Procurement needs an answer from you: Electrical says its current design uses two downward edge sensors, while
+00:18:59 [G4 $2.28] gate_waiting -> Procurement | To finish Check: The parts come to about SGD 85.22, over your SGD 40 budget. Raise the budget, or ask Procurem
+00:18:59 Raising the budget to the most I can spend: 50
+00:19:01 [G4 $2.28] gate_waiting -> Procurement | To finish Check: The parts come to about SGD 85.22, over your SGD 50 budget. Raise the budget, or ask Procurem
+00:19:01 STALLED: To finish Check: The parts come to about SGD 85.22, over your SGD 50 budget. Raise the budget, or ask Procurement for cheaper options. And 6 more on the Journey screen.
+00:19:01 Stopped: stalled: To finish Check: The parts come to about SGD 85.22, over your SGD 50 budget. Raise the budget, or as
+
+# rover: desk-rover-11-22t05-00-530ac4
+
+Stopped: stalled: To finish Check: The parts come to about SGD 85.22, over your SGD 50 budget. Raise the budget, or as. AI spend: $2.28. Passed 20 of 31.
+
+| Check | First run | This run | Detail |
+|---|---|---|---|
+| Got past Gate 3 to the design review | n/a | pass | current gate G4 |
+| Gate 4 needed a complete design | n/a | pass | 15 of 15 needed items settled |
+| A power supply was chosen | n/a | pass | SPST DC switch, 3 A at 12 V DC minimum,100 µF 25 V electrolytic and 100 nF 50 V ceramic capacitors |
+| Overcurrent protection was chosen or waived | n/a | pass | met |
+| All servos were chosen | n/a | FAIL |  |
+| A wiring list was agreed | n/a | pass | 25 connections |
+| Every servo has an agreed control path | n/a | pass | 0 direct pins, 2 I2C nets to a servo driver |
+| Firmware uses the agreed pins | n/a | FAIL | matches |
+| Datasheet limits were read | n/a | pass | 8 confirmed limits |
+| The arm's parts were listed | n/a | pass | 9 parts |
+| Every printable part has a CAD model | n/a | FAIL | 0 of 8 modelled |
+| Mechanical covered all 6 joints | n/a | FAIL | 3 joints listed, no parts for: [] |
+| Board firmware was written | n/a | pass | arduino-uno |
+| Every price converts to one currency | n/a | FAIL | SGD 85.22 for 14 things |
+| The student was asked 8 questions or fewer | n/a | pass | 3 questions |
+| Replies stayed short | n/a | pass | longest 57 words, 1085 in total |
+| Every requirement traces to the student or a stated reason | n/a | pass | 2 of 9 in the student's words |
+| Design tests passed before Gate 5 | n/a | pass | 0 of 1 early tests passed |
+| Parts were exported for printing | n/a | FAIL | 0 STL files |
+| Fusion proposals didn't pile up | n/a | pass | 0 waiting |
+| CAD mass uses a plastic density | n/a | pass | 0 g, 0 cm3 |
+| The laptop app really sends the packet | n/a | pass | wired |
+| Firmware flashed to the real board | n/a | FAIL | null |
+| The real board received a real packet | n/a | FAIL | not run |
+| No agent sent the student to a terminal | n/a | pass | clean |
+| Nothing stale from the concept stage | n/a | pass | clean |
+| Research sources are about this kind of system | n/a | FAIL | 0 of 5: A000066-datasheet.pdf HCSR04.pdf Overview / Monochrome OLED Breakouts / Adafruit Learning  |
+| Research used manufacturer or web sources | n/a | pass | Web or other,Web or other,Web or other,Web or other,Web or other |
+| The student never got stuck with no way forward | n/a | FAIL | To finish Check: The parts come to about SGD 85.22, over your SGD 50 budget. Raise the budget, or ask Procurement for cheaper options. And 6 |
+| No page crashes or errors | n/a | pass | 0 crashes, 0 errors |
+| Gates 5 and 6 worked on a labelled rehearsal | n/a | FAIL | not run |
+
+Saved in C:\Leisure\BuildAnything\app\e2e\runs\rover-2026-11-22T00-03-56

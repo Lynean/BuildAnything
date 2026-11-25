@@ -1,0 +1,14 @@
+23:43:52 Scenario: rover | board: none | fusion: false
+23:43:52 Project: desk-rover-11-22t05-00-530ac4
+00:02:03 [G4 $1.72] bug -> Electrical | Electrical found a tool problem: The generated packet header requires 64-bit double and stops the Uno build: “
+00:03:48 Electrical replied: the board is an Arduino Uno R3. please pick a motor driver, distance sensor and small screen that are cheap and tell me what goes where.
+file:///C:/Leisure/BuildAnything/app/e2e/student-run.mjs:41
+  if (!r.ok) throw new Error(`${method} ${path}: ${r.status} ${(await r.text()).slice(0, 300)}`);
+                   ^
+
+Error: GET /projects/desk-rover-11-22t05-00-530ac4/hq: 500 
+    at api (file:///C:/Leisure/BuildAnything/app/e2e/student-run.mjs:41:20)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async file:///C:/Leisure/BuildAnything/app/e2e/student-run.mjs:427:14
+
+Node.js v22.20.0
