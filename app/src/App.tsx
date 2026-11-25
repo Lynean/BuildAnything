@@ -11,14 +11,15 @@ import ChangesScreen from "./ChangesScreen";
 import TestsScreen from "./TestsScreen";
 import Journey from "./Journey";
 import ServicesScreen from "./ServicesScreen";
+import PlatformScreen from "./PlatformScreen";
 import TeamStory from "./TeamStory";
 import World, { placeOf } from "./World";
 import Explorer, { FileView } from "./Explorer";
 import { watchExpandable } from "./expandable";
 
-const SCREENS = ["Headquarters", "Journey", "Team", "Tests", "Sources", "Mechanical", "Electrical", "Software", "Interface", "Procurement", "External Service", "Internal Service", "Agents", "Review queue", "Import project"] as const;
+const SCREENS = ["Headquarters", "Journey", "Team", "Tests", "Sources", "Mechanical", "Electrical", "Software", "Interface", "Procurement", "External Service", "Internal Service", "Platform", "Agents", "Review queue", "Import project"] as const;
 // Screens that were merged into others, so old links still land somewhere sensible.
-const MOVED: Record<string, string> = { Changes: "Review queue", Gates: "Journey", Tasks: "Headquarters", "Project Network": "Team", Connectors: "External Service", Platform: "Internal Service" };
+const MOVED: Record<string, string> = { Changes: "Review queue", Gates: "Journey", Tasks: "Headquarters", "Project Network": "Team", Connectors: "External Service" };
 type Screen = (typeof SCREENS)[number];
 const JOURNEY_LOOK = { label: "Journey", color: "#ffd166", icon: "M3 17h3l3-9 4 12 3-7h5v2h-4l-4 9-4-12-2 5H3z" };
 const IMPORT_LOOK = { label: "Import a project", color: "#6ab0c8", icon: "M11 3h2v9.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3zM4 18h16v3H4z" };
@@ -122,6 +123,7 @@ export default function App() {
     Procurement: <ProcurementLive />,
     "External Service": <ServicesScreen side="external" />,
     "Internal Service": <ServicesScreen side="internal" />,
+    Platform: <PlatformScreen />,
     Agents: <AgentsScreen />,
     "Review queue": <><Review onOpen={(name) => open(name)} onChange={refresh} /><ChangesScreen /></>,
     "Import project": <ImportLive />,

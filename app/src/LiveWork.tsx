@@ -12,7 +12,8 @@ const DEPARTMENTS = ["Mechanical", "Electrical", "Software", "Procurement"];
 /** The canvas node an agent belongs to. */
 export function placeFor(r: Running, visible: Set<string>): string {
   if (r.agent === "external_service" || r.agent === "skill_reviewer") return "External Service";
-  if (r.agent === "internal_service" || r.agent === "platform") return "Internal Service";
+  if (r.agent === "platform") return visible.has("Platform") ? "Platform" : "Internal Service";
+  if (r.agent === "internal_service") return "Internal Service";
   if (r.area === "Tests" && visible.has("Tests")) return "Tests";
   if (DEPARTMENTS.includes(r.area) && visible.has(r.area)) return r.area;
   return "Headquarters";

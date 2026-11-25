@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { call, useBusy, useProject } from "./api";
 import AgentChat, { type ChatMessage } from "./AgentChat";
 import ConnectorsLive from "./ConnectorsLive";
-import PlatformScreen from "./PlatformScreen";
+import { ScreenChip } from "./Linked";
 import ToolTabsAdmin from "./ToolTabsAdmin";
 import ConnectionsAdmin from "./ConnectionsAdmin";
 
@@ -33,7 +33,7 @@ function Verification({ s }: { s: Skill }) {
 
 const TAB_NAMES: Record<string, string> = { cloud: "Cloud", app: "App", platform: "Platform", project: "Project" };
 const SIDES = { external: { title: "External Service", groups: ["cloud", "app"], intro: "Connects the app to outside services (online APIs and MCP servers) so the agents can use them, guiding you through the setup. For programs you operate yourself, it writes Skills: guides the departments' agents follow to help you use them." },
-  internal: { title: "Internal Service", groups: ["platform", "project"], intro: "No tools are connected to the app. Internal Service looks after the open project's own Python environment, and the app's file viewers." } };
+  internal: { title: "Internal Service", groups: ["platform", "project"], intro: "Looks after the open project's own Python environment, and makes tool tabs for local tools such as MuJoCo or data plots." } };
 
 function ToolCard({ tool, onInstall, onKey, busy, why, onUse }: { tool: Tool; onInstall: (t: Tool) => void; onKey: (t: Tool, key: string) => void; busy: boolean; why?: string; onUse?: (t: Tool, on: boolean) => void }) {
   const [key, setKey] = useState("");
@@ -174,7 +174,7 @@ export default function ServicesScreen({ side }: { side: "external" | "internal"
       </div>
 
       {side === "external" && <details className="card stage-report"><summary>AI providers and model tiers</summary><ConnectorsLive /></details>}
-      {side === "internal" && <details className="card stage-report"><summary>File viewers and converters</summary><PlatformScreen /></details>}
+      {side === "internal" && <p className="hint">File viewers and converters have their own place now: <ScreenChip screen="Platform">Platform</ScreenChip>, in Reception.</p>}
     </div>
   );
 }

@@ -21,9 +21,9 @@ export default function PlatformScreen() {
   return (
     <div className="page">
       <h1>Platform</h1>
-      <p className="intro">What the app itself can open and show. Every file the departments write appears in the file explorer. For a kind of file with no viewer, open it there and ask Platform: its agent writes a converter, tests it on that file, and you approve it once for every project.</p>
+      <p className="intro">The Platform agent makes sure the app can show every file the departments write. They all appear in the file explorer. For a kind of file with no viewer, open it there and ask Platform: its agent writes a converter, tests it on that file, and you approve it once for every project.</p>
       {error && <p className="error">{error}</p>}
-      {!formats ? <p className="hint">Loading…</p> : (
+      {!projectId ? <p className="hint">Choose a project with the switcher at the top left to see which of its file types the app can show, and the converters Platform wrote.</p> : !formats ? <p className="hint">Loading…</p> : (
         <div className="grid">
           <section className="card">
             <h3>File types in this project</h3>

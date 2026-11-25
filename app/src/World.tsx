@@ -11,8 +11,9 @@ export const W = 1600, H = 900;
 export const PLACES: Place[] = [
   { screen: "Sources", label: "Library", blurb: "Research and sources", x: 170, y: 520, color: "#7f8cff", icon: "M4 3h4v18H4zm6 0h4v18h-4zm6.3.6 3.8-1 4.6 17.4-3.8 1z" },
   { screen: "Agents", label: "HR", blurb: "Every agent and its job", x: 170, y: 250, color: "#3fc7a4", icon: "M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm8 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM8 13c-3 0-6 1.5-6 4v2h12v-2c0-2.5-3-4-6-4Zm8 0c-.6 0-1.3 0-1.9.2A4.6 4.6 0 0 1 16 17v2h6v-2c0-2.5-3-4-6-4Z" },
-  { screen: "External Service", label: "External Service", blurb: "Cloud APIs, MCP and desktop apps", x: 1440, y: 330, color: "#8fa8c8", icon: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm6.9 6h-3a15.6 15.6 0 0 0-1.4-3.6A8 8 0 0 1 18.9 8ZM12 4c.8 1.2 1.5 2.5 1.9 4h-3.8c.4-1.5 1.1-2.8 1.9-4ZM4.3 14a8.2 8.2 0 0 1 0-4h3.4a16.5 16.5 0 0 0 0 4Zm.8 2h3c.3 1.3.8 2.5 1.4 3.6A8 8 0 0 1 5.1 16Zm3-8h-3a8 8 0 0 1 4.4-3.6C8 5.5 7.5 6.7 8.1 8ZM12 20c-.8-1.2-1.5-2.5-1.9-4h3.8c-.4 1.5-1.1 2.8-1.9 4Zm2.3-6H9.7a14.7 14.7 0 0 1 0-4h4.6a14.7 14.7 0 0 1 0 4Zm.3 5.6c.6-1.1 1.1-2.3 1.4-3.6h3a8 8 0 0 1-4.4 3.6Zm1.7-5.6a16.5 16.5 0 0 0 0-4h3.4a8.2 8.2 0 0 1 0 4Z" },
-  { screen: "Internal Service", label: "Internal Service", blurb: "Local libraries, simulators and environments", x: 1440, y: 540, color: "#9aa7b8", icon: "M16 3v4h2V3h2v4a3 3 0 0 1-3 3h-1v3a5 5 0 0 1-4 4.9V21h-2v-3.1A5 5 0 0 1 6 13v-3H5a3 3 0 0 1-3-3V3h2v4h2V3h2v4h8V3z" },
+  { screen: "External Service", label: "External Service", blurb: "Online services, MCP servers and Skills", x: 1440, y: 315, color: "#8fa8c8", icon: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm6.9 6h-3a15.6 15.6 0 0 0-1.4-3.6A8 8 0 0 1 18.9 8ZM12 4c.8 1.2 1.5 2.5 1.9 4h-3.8c.4-1.5 1.1-2.8 1.9-4ZM4.3 14a8.2 8.2 0 0 1 0-4h3.4a16.5 16.5 0 0 0 0 4Zm.8 2h3c.3 1.3.8 2.5 1.4 3.6A8 8 0 0 1 5.1 16Zm3-8h-3a8 8 0 0 1 4.4-3.6C8 5.5 7.5 6.7 8.1 8ZM12 20c-.8-1.2-1.5-2.5-1.9-4h3.8c-.4 1.5-1.1 2.8-1.9 4Zm2.3-6H9.7a14.7 14.7 0 0 1 0-4h4.6a14.7 14.7 0 0 1 0 4Zm.3 5.6c.6-1.1 1.1-2.3 1.4-3.6h3a8 8 0 0 1-4.4 3.6Zm1.7-5.6a16.5 16.5 0 0 0 0-4h3.4a8.2 8.2 0 0 1 0 4Z" },
+  { screen: "Internal Service", label: "Internal Service", blurb: "Project environments and tool tabs", x: 1440, y: 455, color: "#9aa7b8", icon: "M16 3v4h2V3h2v4a3 3 0 0 1-3 3h-1v3a5 5 0 0 1-4 4.9V21h-2v-3.1A5 5 0 0 1 6 13v-3H5a3 3 0 0 1-3-3V3h2v4h2V3h2v4h8V3z" },
+  { screen: "Platform", label: "Platform", blurb: "File viewers and converters", x: 1440, y: 590, size: 0.85, color: "#7fb3a8", icon: "M4 4h10l6 6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm9 1.5V11h5.5ZM6 14h3v2H6zm5 0h7v2h-7zm-5 4h3v2H6zm5 0h7v2h-7z" },
   { screen: "Review queue", label: "You", blurb: "Approvals and change requests", x: 560, y: 220, color: "#e8a659", icon: "M3 13h5l2 3h4l2-3h5v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zm2-9h14l2 7h-6l-2 3h-2l-2-3H3z" },
   { screen: "Headquarters", label: "Headquarters", blurb: "Talk to the team", x: 560, y: 450, color: "#54d6c2", size: 1.2, icon: "M12 2 3 7v2h18V7zM5 11v7h3v-7zm5 0v7h4v-7zm6 0v7h3v-7zM3 20v2h18v-2z" },
   { screen: "Team", label: "The Ledger", blurb: "Everything recorded, live", x: 170, y: 720, color: "#a493f2", icon: "M6 3h11a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm1 4v2h9V7Zm0 4v2h9v-2Zm0 4v2h6v-2Z" },
@@ -35,10 +36,10 @@ const EDGES: { from: string; to: string; label: string }[] = [
   { from: "Headquarters", to: "Software", label: "Assigns work" },
   { from: "Headquarters", to: "Procurement", label: "Assigns work" },
   { from: "Headquarters", to: "Tests", label: "Test plan" },
-  { from: "External Service", to: "Mechanical", label: "Skills" },
-  { from: "External Service", to: "Electrical", label: "KiCad and parts APIs" },
-  { from: "Internal Service", to: "Electrical", label: "PlatformIO" },
-  { from: "Internal Service", to: "Software", label: "Python and simulators" },
+  { from: "External Service", to: "Mechanical", label: "Skills and connections" },
+  { from: "External Service", to: "Electrical", label: "Skills and connections" },
+  { from: "Internal Service", to: "Electrical", label: "Tool tabs" },
+  { from: "Internal Service", to: "Software", label: "Python environment" },
   { from: "Mechanical", to: "Procurement", label: "Parts to buy" },
   { from: "Electrical", to: "Procurement", label: "Components to buy" },
   { from: "Electrical", to: "Software", label: "Drivers" },
@@ -51,7 +52,7 @@ const NAME = 30;  // room for a node's name under it
 // The Database frame holds the project's records: the Ledger and the Library.
 const DATABASE = { x: 60, y: 430, w: 220, h: 360 };
 // Reception holds the two services that bring tools into the app.
-const RECEPTION = { x: 1330, y: 255, w: 220, h: 360 };
+const RECEPTION = { x: 1330, y: 250, w: 220, h: 410 };
 
 interface Stop { id: string; stage: string; state: string; }
 interface Dept { name: string; state: string; jobs: { id: string }[]; }
