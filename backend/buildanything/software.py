@@ -280,19 +280,20 @@ def build(root: Path, device: str, declared: list[str] | None = None) -> dict[st
 
 
 def device_python(root: Path, device: str, install: bool = False) -> tuple[str, str]:
-    """The Python this program runs in: firmware/<device>/.venv with requirements.txt installed. Installing happens only
-    when a person allowed the tests to run (on the Software screen), and again only when requirements.txt changes.
-    Returns the interpreter, and a plain problem if the install failed."""
+    """The Python this program runs in: the project's own environment (projects/<id>/.venv, the same one Internal Service
+    looks after), with this program's requirements.txt installed. Installing happens only when a person allowed the tests
+    to run (on the Software screen), and again only when requirements.txt changes. Returns the interpreter, and a plain
+    problem if the install failed."""
     import hashlib
 
     base = root / "firmware" / device
-    env = base / ".venv"
+    env = root / ".venv"
     python = env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if not install:
         return (str(python) if python.exists() else sys.executable), ""
     requirements = base / "requirements.txt"
     want = hashlib.sha256(requirements.read_bytes()).hexdigest() if requirements.exists() else "none"
-    stamp = env / ".requirements-hash"
+    stamp = env / f".requirements-{device}"
     if python.exists() and stamp.exists() and stamp.read_text(encoding="utf-8") == want:
         return str(python), ""
     uv = shutil.which("uv")

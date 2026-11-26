@@ -259,7 +259,7 @@ async def test_requests_are_limited_and_cannot_target_yourself(led):
 
 @pytest.mark.asyncio
 async def test_lead_tools_only_propose(led, services):
-    gateway = Gateway(tool_calls={"lead_electrical": [("propose_component", {"part_number": "SG90", "role": "Pan servo"})], "lead_mechanical": [("propose_part", {"number": "P1", "name": "Bracket", "material": "PLA", "process": "3D print", "quantity": 1, "why": "Holds the servo"})]})
+    gateway = Gateway(tool_calls={"lead_electrical": [("propose_components", {"components": [{"part_number": "SG90", "role": "Pan servo"}]})], "lead_mechanical": [("propose_parts", {"parts": [{"number": "P1", "name": "Bracket", "material": "PLA", "process": "3D print", "quantity": 1, "why": "Holds the servo"}]})]})
     await hq.talk_to_department(led, gateway, "Electrical", "go", services)
     await hq.talk_to_department(led, gateway, "Mechanical", "go", services)
     state = led.state()

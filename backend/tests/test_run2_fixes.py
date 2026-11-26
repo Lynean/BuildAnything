@@ -133,7 +133,7 @@ def test_the_program_gets_its_own_python_with_its_requirements(tmp_path):
     python, problem = software.device_python(tmp_path / "p", "laptop")
     assert not problem and python == sys.executable  # nothing installed until a person allowed it
     python, problem = software.device_python(tmp_path / "p", "laptop", install=True)
-    assert not problem and ".venv" in python and (base / ".venv" / ".requirements-hash").exists()
+    assert not problem and ".venv" in python and (tmp_path / "p" / ".venv" / ".requirements-laptop").exists()  # the project's one environment
     assert software.device_python(tmp_path / "p", "laptop")[0] == python
 
 
@@ -166,3 +166,16 @@ async def test_headquarters_chat_can_raise_a_change_once_the_concept_is_approved
     changes.approve(led, result["id"], "Yes.", Actor.human())
     requirement = led.state().of_type("requirement", "confirmed")[0]
     assert requirement["fields"]["person_said"] == "The real arm must use a PCA9685 servo driver."
+
+
+def test_several_parts_and_components_are_proposed_in_one_call(tmp_path):
+    led = Ledger(tmp_path / "p")
+    tools = {getattr(t, "__name__", ""): t for t in hq._lead_tools(led, None, "Mechanical", hq.Services(None))}
+    assert "propose_part" not in tools
+    out = tools["propose_parts"]([hq.PartProposal(number=f"M-0{i}", name=f"Link {i}", material="PLA", process="3D print", quantity=1, why="Arm link") for i in range(1, 4)]
+                                 + [{"number": "M-01", "name": "Link 1", "material": "PLA", "process": "3D print", "quantity": 1, "why": "again"}])
+    assert [r.get("id", "") != "" for r in out["results"]] == [True, True, True, False] and "already listed" in out["results"][3]["status"]
+    assert len(led.state().of_type("part_proposal", "proposed")) == 3
+    tools = {getattr(t, "__name__", ""): t for t in hq._lead_tools(led, None, "Electrical", hq.Services(None))}
+    out = tools["propose_components"]([{"part_number": "PCA9685", "role": "Servo driver", "fills": "Servo driver"}, {"part_number": "Fuse, rating TBD", "role": "Protection"}])
+    assert "id" in out["results"][0] and "error" in out["results"][1]

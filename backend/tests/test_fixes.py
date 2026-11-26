@@ -482,7 +482,8 @@ def test_a_new_event_is_seen_immediately(led):
 
 
 def propose_tool(led):
-    return next(t for t in hq._lead_tools(led, Lead(), "Electrical", hq.Services(None)) if getattr(t, "__name__", "") == "propose_component")
+    batch = next(t for t in hq._lead_tools(led, Lead(), "Electrical", hq.Services(None)) if getattr(t, "__name__", "") == "propose_components")
+    return lambda part_number, role, fills="": {k: v for k, v in batch([{"part_number": part_number, "role": role, "fills": fills}])["results"][0].items() if k != "part_number"}
 
 
 def test_a_tbd_part_cannot_even_be_proposed(led):
@@ -649,7 +650,8 @@ def test_only_a_person_can_accept_a_warning_and_it_shows_in_the_report(led, monk
 
 
 def part_tool(led):
-    return next(t for t in hq._lead_tools(led, Lead(), "Mechanical", hq.Services(None)) if getattr(t, "__name__", "") == "propose_part")
+    batch = next(t for t in hq._lead_tools(led, Lead(), "Mechanical", hq.Services(None)) if getattr(t, "__name__", "") == "propose_parts")
+    return lambda number, name, material, process, quantity, why: batch([{"number": number, "name": name, "material": material, "process": process, "quantity": quantity, "why": why}])["results"][0]
 
 
 def test_a_part_already_listed_cannot_be_suggested_again(led):
@@ -919,7 +921,7 @@ async def test_every_thing_to_buy_needs_a_price_and_a_budget(led):
 
 
 @pytest.mark.asyncio
-async def test_code_can_only_be_rewritten_twice_per_reply(led, monkeypatch):
+async def test_code_writes_per_reply_are_capped(led, monkeypatch):
     calls = []
 
     async def fake(*args, **kwargs):
@@ -928,9 +930,9 @@ async def test_code_can_only_be_rewritten_twice_per_reply(led, monkeypatch):
 
     monkeypatch.setattr(hq.software, "generate", fake)
     write_code = tool_named(led, "Software", "write_code")
-    for _ in range(4):
+    for _ in range(hq.MAX_CODE_WRITES + 2):
         result = await write_code("laptop", "g", "")
-    assert len(calls) == 2 and "error" in result
+    assert len(calls) == hq.MAX_CODE_WRITES and "error" in result
 
 
 def test_the_procedure_reaches_every_lead_and_only_leads():

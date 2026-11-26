@@ -139,6 +139,9 @@ export function Review({ onOpen, onChange }: { onOpen: (screen: string) => void;
   return (
     <Page title="Review queue" intro="Everything waiting on you, in one place. Only a person can approve these." projects={projects} projectId={projectId} setProjectId={setProjectId}>
       <Messages busy={busy} error={error} />
+      {items.filter((r) => r.kind === "part").length > 1 && (
+        <div className="row"><button disabled={!!busy} onClick={() => run("Adding parts", async () => { for (const r of items.filter((x) => x.kind === "part")) await call(`${base}/part-proposals/${r.id}`, "POST", { accept: true }); await load(); })}>Add all {items.filter((r) => r.kind === "part").length} suggested parts</button><span className="hint">Or add and dismiss them one by one below.</span></div>
+      )}
       {items.length === 0 ? <p className="hint">Nothing is waiting on you.</p> : (
         <div className="reviews">
           {items.map((r) => (

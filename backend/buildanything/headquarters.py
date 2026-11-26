@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from agents import WebSearchTool
+from pydantic import BaseModel, Field
 
 from . import shape, jobs, ci, devicefacts, documents, datasheets, designneeds, protocol, agents as hq_agents, changes, compat, depgraph, traceability, connectors as conn, firmware, gates, interfaces, mechanical, page_memory, procurement, software
 from .citations import PaperIndex
@@ -96,6 +97,7 @@ GATE_REVIEW = True
 _proposing = threading.Lock()  # An agent can call tools in parallel, which could otherwise add one part twice.
 CLONE_STAGGER_S = 3  # The first clone goes slightly early, so the others find its context already saved at the cheaper rate.
 PARALLEL = "Other jobs in your department are running at the same time. Stay within your items. look_up_project shows the current state and what the others are doing. If you need anything outside your items, report BLOCKED."
+MAX_CODE_WRITES = 4  # per Lead reply: the first pass plus up to three to finish what it left
 MAX_DRIVES = 6  # Per department and gate, so an agent that can't finish can never spend without limit.
 ROUTINE = {"QUESTION": ("Fast", 8), "CHANGE_NOTICE": ("Fast", 8)}  # Answering a question or acknowledging a change is routine: cheaper tier, fewer turns.
 LEAD_TURNS = 12
@@ -335,7 +337,7 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
     decided = {e["data"].get("device") for e in events if e["kind"] == "software.autotest"}
     for device in firmware.devices(ledger.root):
         if device not in decided and firmware.is_computer(ledger.root, device) and any(not f.get("generated") for f in firmware.scan_workspace(ledger.root, device)):
-            out.append({"kind": "autotest", "device": device, "text": f"Let the app run the {device} program's tests after each Software write? Then Software sees failures and fixes them itself, instead of you running the tests. It installs requirements.txt into the program's own folder. Tick 'Run tests after each agent write' on the Software screen.", "goto": "Software"})
+            out.append({"kind": "autotest", "device": device, "text": f"Let the app run the {device} program's tests after each Software write? Then Software sees failures and fixes them itself, instead of you running the tests. It installs requirements.txt into this project's Python environment. Tick 'Run tests after each agent write' on the Software screen.", "goto": "Software"})
             break
     current = gates.current_gate(state)
     if current and next_action(ledger) is None:
@@ -650,6 +652,24 @@ def _service_tool(ledger: Ledger, department: str) -> Any:
     return use_service
 
 
+class PartProposal(BaseModel):
+    number: str = Field(description="Part number, such as M-01")
+    name: str
+    material: str
+    process: str = Field(description="How it's made or bought, such as 3D print, laser cut or bought")
+    quantity: int = Field(ge=1)
+    why: str = Field(description="What it's for, in one sentence")
+
+
+class ComponentProposal(BaseModel):
+    part_number: str
+    role: str = Field(description="What it does in this design")
+    fills: str = Field(default="", description="The needed item it provides, exactly as named in set_needed_items")
+    generic: bool = Field(default=False, description="True only for things with no datasheet, such as wire and simple connectors")
+    datasheet_url: str = Field(default="", description="A direct link to its datasheet PDF, if found")
+    category: str = Field(default="", description="microcontroller, dev_board, module or generic")
+
+
 def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Services, nested: bool = False) -> list[Any]:
     root = ledger.root
     if nested and not concept_approved(ledger):
@@ -681,8 +701,15 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
                 return {"error": "The part number wasn't found in that PDF. Ask the person to check it on this screen."}
             return await datasheets.extract_component(ledger, gateway, component["id"], sheet, root / "datasheets" / sheet["fields"]["file"])
 
-        def propose_component(part_number: str, role: str, fills: str = "", generic: bool = False, datasheet_url: str = "", category: str = "") -> dict[str, str]:
-            """Suggest a component for the person to confirm. fills is the needed item it provides, exactly as named in set_needed_items. One part per needed item: the same part can fill several items, but to change an item's part use raise_change_request. Set generic only for things with no datasheet, such as wire, cable and simple connectors. datasheet_url is a direct link to the PDF if you found one. category is microcontroller (a bare chip), dev_board (a board carrying a chip, such as a Nucleo or DevKit), module (a display, sensor or driver board) or generic; it decides which documents the part needs."""
+        def propose_components(components: list[ComponentProposal]) -> dict[str, Any]:
+            """Suggest components for the person to confirm, all in one call: list every component you're proposing now. For each, fills is the needed item it provides, exactly as named in set_needed_items. One part per needed item: the same part can fill several items, but to change an item's part use raise_change_request. Set generic only for things with no datasheet, such as wire, cable and simple connectors. datasheet_url is a direct link to the PDF if you found one. category is microcontroller (a bare chip), dev_board (a board carrying a chip, such as a Nucleo or DevKit), module (a display, sensor or driver board) or generic; it decides which documents the part needs."""
+            results = []
+            for item in components:
+                c = item if isinstance(item, ComponentProposal) else ComponentProposal.model_validate(item)
+                results.append({"part_number": c.part_number, **one_component(c.part_number, c.role, c.fills, c.generic, c.datasheet_url, c.category)})
+            return {"results": results}
+
+        def one_component(part_number: str, role: str, fills: str = "", generic: bool = False, datasheet_url: str = "", category: str = "") -> dict[str, str]:
             if re.search(r"\bTBD\b", part_number, re.I):
                 return {"error": "Nobody can buy a TBD. Work out the rating first, or leave the item open and say what you need to decide it."}
             with _proposing:
@@ -756,15 +783,23 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
                 return {"error": f"There's no device called {name}. Devices: {', '.join(firmware.devices(root)) or 'none yet'}."}
             return await benchwriter.build_bench(ledger, gateway, root, name)
 
-        tools += [dispute_check, set_needed_items, read_limits, read_facts, propose_component, draft_connections, group_circuit, write_firmware, build_bench, WebSearchTool(), *session.tools()]
+        tools += [dispute_check, set_needed_items, read_limits, read_facts, propose_components, draft_connections, group_circuit, write_firmware, build_bench, WebSearchTool(), *session.tools()]
     elif department == "Mechanical":
-        def propose_part(number: str, name: str, material: str, process: str, quantity: int, why: str) -> dict[str, str]:
-            """Suggest a part for the person to add to the parts list. To change a part already listed, use raise_change_request."""
+        def propose_parts(parts: list[PartProposal]) -> dict[str, Any]:
+            """Suggest parts for the person to add to the parts list, all in one call: list every part you're proposing now, each with its number, name, material, process, quantity and why it's needed. To change a part already listed, use raise_change_request."""
+            results = []
             with _proposing:
-                state = ledger.state()
-                if number.strip() in mechanical.parts_by_number(state) or any(p["fields"]["number"] == number.strip() for p in state.of_type("part_proposal", "proposed")):
-                    return {"status": f"{number.strip()} is already listed."}
-            return {"id": ledger.propose(Actor.agent("mechanical"), "part_proposal", number=number.strip(), name=name.strip(), material=material.strip(), process=process.strip(), qty=max(1, quantity), why=why.strip())}
+                for item in parts:
+                    p = item if isinstance(item, PartProposal) else PartProposal.model_validate(item)
+                    number = p.number.strip()
+                    state = ledger.state()
+                    if not number:
+                        results.append({"number": "", "error": "Give the part a number, such as M-01."})
+                    elif number in mechanical.parts_by_number(state) or any(x["fields"]["number"] == number for x in state.of_type("part_proposal", "proposed")):
+                        results.append({"number": number, "status": f"{number} is already listed."})
+                    else:
+                        results.append({"number": number, "id": ledger.propose(Actor.agent("mechanical"), "part_proposal", number=number, name=p.name.strip(), material=p.material.strip(), process=p.process.strip(), qty=max(1, p.quantity), why=p.why.strip())})
+            return {"results": results}
 
         def set_assemblies(plan_json: str, why: str) -> dict[str, Any]:
             """List every joint and assembly of the complete product and the part numbers in each, as a JSON object such as {"Base joint": ["M-01", "M-02"], "Gripper": ["M-09"]}. Include all of it, even if you plan to test one joint first, because a gate checks that each has parts. Call again with the full list to update it."""
@@ -791,15 +826,15 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
             ledger.append(Actor.agent("mechanical"), "deliverable.saved", department="Mechanical", path=f"mechanics/deliverables/{clean}", chars=len(content))
             return {"saved": f"mechanics/deliverables/{clean}", "note": "Software reads it with read_deliverable."}
 
-        tools += [propose_part, set_assemblies, save_deliverable, WebSearchTool()]
+        tools += [propose_parts, set_assemblies, save_deliverable, WebSearchTool()]
     elif department == "Software":
         writes = {"count": 0}
 
         async def write_code(device: str, goal: str, board: str) -> dict[str, Any]:
-            """Write code for one device. device is lowercase with hyphens. Leave board empty for a computer. For a microcontroller, give its PlatformIO board ID: this writes only the APP layer, on top of the drivers and middleware Electrical wrote. Include everything in one goal, because this can only run twice per reply."""
+            """Write code for one device. device is lowercase with hyphens. Leave board empty for a computer. For a microcontroller, give its PlatformIO board ID: this writes only the APP layer, on top of the drivers and middleware Electrical wrote. Put everything in the first goal; call again only to finish what it says is not done. It can run up to 4 times per reply."""
             writes["count"] += 1
-            if writes["count"] > 2:
-                return {"error": "That's twice in this reply, and each rewrite costs money. Report what's left."}
+            if writes["count"] > MAX_CODE_WRITES:
+                return {"error": f"That's {MAX_CODE_WRITES} code writes in this reply, and each costs money. Report what's left as PARTIAL, naming exactly what isn't done."}
             name = device.strip().lower()
             if not re.fullmatch(r"[a-z0-9-]{1,40}", name):
                 return {"error": "Device names use lowercase letters, numbers and hyphens."}
