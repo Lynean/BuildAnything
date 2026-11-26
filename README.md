@@ -23,6 +23,20 @@ You describe what you want to build. Headquarters proposes only the departments 
 
 ## Features
 
+### Departments that work side by side, and keep going
+
+Headquarters runs the departments in parallel: while Mechanical works, it can start Software's job, and it waits only when there's nothing else to start. A department never runs two jobs at once. A request that arrives while it's busy waits its turn, so two jobs can't write over each other's work.
+
+- **It doesn't stall.** For each stage, Headquarters drives the work behind every item you'll confirm, plus whatever a department said it still has to do itself. Your answers to a department's questions go back to it as a go-ahead to carry on. It stops and tells you after two rounds in a row that finish nothing.
+- **Code is checked by running it.** Software's code writer changes files with precise edits, like a patch, across several files at once. After every write the app imports the program in a fresh Python, and if you allow it, runs the program's tests in the project's own environment. Failures go straight back to the agent to fix.
+- **Proposals come in batches.** Mechanical proposes all its parts in one go, and Electrical all its components. You can add them all with one click.
+- **Every file counts.** Departments see everything in the project folder, including files you add yourself, such as a URDF exported from your CAD program.
+- **Missing a tool?** A department asks Reception. External Service asks what you already have, looks for an established add-in or converter before writing anything new, guides you through setting it up, then writes a Skill so it's reused.
+
+### Change the plan by asking
+
+Once the concept is approved, tell Headquarters' chat what you want changed, such as "the real arm must use a PCA9685". It puts the change on the Changes screen, an independent reviewer checks what it affects, and you approve or reject it. A new requirement you asked for is recorded in your own words. The Verifier's findings on the plan can each be fixed, kept for later, accepted or dismissed, and the plan is revised once they're decided.
+
 ### See who's working, and what they're thinking
 
 The home canvas shows every agent that's running right now. A busy node gets a turning dashed ring in its own colour, a status bar along the bottom lists each agent with its current step and how long it's been running, and the speech-bubble button opens a live chat-style trail: the model's reasoning summaries, each tool it uses (and with what), and what it says.
@@ -79,7 +93,7 @@ External Service connects the app to outside services, such as Altium 365 throug
 ### Reception: Skills, tool tabs, project environments
 
 - **External Service** writes **Skills**: guides for programs you operate yourself, such as Altium, researched from official sources, checked by the app and an independent reviewer, and approved by you. It also keeps your AI provider settings.
-- **Internal Service** looks after each project's own Python environment (it proposes installs; you approve them) and the app's file viewers.
+- **Internal Service** looks after each project's own Python environment (it proposes installs; you approve them) and the app's file viewers. The same environment runs the program's tests after each Software write.
 - **Tool tabs** are reviewed, previewed, approved and shown per project here, with one switch for data scripts.
 
 ![Tool tabs at Reception](docs/images/reception-tool-tabs.png)
@@ -137,7 +151,7 @@ sequenceDiagram
   A->>S: send the change
 ```
 
-**Stack:** a React 18 + Vite app (`app/`), a FastAPI backend (`backend/`) running the agents through the OpenAI Agents SDK, with fastmcp for MCP, esbuild for tool tabs, and MuJoCo for simulations. All data stays in local folders, and the servers listen on this computer only (127.0.0.1).
+**Stack:** a React 18 + Vite app (`app/`), a FastAPI backend (`backend/`) running the agents through the OpenAI Agents SDK, with fastmcp for MCP and esbuild for tool tabs. Simulators such as MuJoCo are used by the programs the agents write, installed in each project's own environment. All data stays in local folders, and the servers listen on this computer only (127.0.0.1).
 
 ---
 
@@ -188,6 +202,8 @@ Open **External Service** → **AI providers and model tiers** and paste your pr
 3. Headquarters proposes the **team** (departments) and the **gates** (what must be true before moving on). Change them if you like, then approve.
 4. Open a department to talk to its lead. Its tabs group the work: **Lead** (the chat), the department's own tabs, any **tool tabs**, and **Capability** (its Skills, services and hand-offs).
 5. Approve or reject what agents propose in **You** (the review queue), and tick gate criteria when they're met.
+6. When Software first writes a program, **Needs you** asks whether the app may run its tests after each write. Say yes (on the Software screen) and Software fixes failing tests itself instead of you running them.
+7. To change the plan later, tell Headquarters' chat. The change waits on the **Changes** screen for your approval.
 
 ### 5. Watch the team work
 
@@ -226,9 +242,11 @@ Everything below was built and verified in this repository's latest work, in the
 | Sealed frames | A network request from inside a tab is blocked; tabs only get answers to five read-only questions. |
 | Connections | Approve, save key, **Test** ("who_am_i answered (200)"); an agent read data; a change waited for **Allow and send**, then went through (201); a tab read live data. The keys stayed in the keyring and were never written to the record. |
 | Person-only actions | The tests caught, and fixed, a case where an agent's refused attempt to save a key still reached the keyring. Approving, keys, disconnecting and allowing changes are now checked before anything happens. |
-| Backend tests | **713 passing** (`pytest`), including tool tabs, connections (against a local stand-in service, client-credentials sign-in and an MCP server) and agent trails. |
+| A full project run (RUA assistant arm) | A review run, with the reviewer acting only as the owner: the agents loaded the real 6-joint arm in MuJoCo from its URDF with all 82 meshes, reached commanded poses with 0° error, built a handover controller whose simulation tests prove the slow approach and the 10 cm stop, and wired it into a desktop app, with 91 tests passing. The pain points it found were fixed afterwards. |
+| Backend tests | **736 passing** (`pytest`), including tool tabs, connections (against a local stand-in service, client-credentials sign-in and an MCP server), agent trails, parallel Headquarters and the code writer's checks. |
 
 **Not yet tried:**
+- **The latest fixes in a full run:** parallel Headquarters driving the stage work, automatic tests and batch proposals pass their tests, but haven't been through a complete project yet.
 - **Real services:** connections haven't run against a real online service. The Altium 365 example uses Nexar's documented sign-in addresses and scopes, but whether Nexar accepts the app's local sign-in return address isn't confirmed.
 - **Agents writing tabs and connections:** no agent has written a tab or a connection by itself yet. The examples were put through the same build and approval path.
 - **Reasoning summaries:** these appear only when the model gives one.
