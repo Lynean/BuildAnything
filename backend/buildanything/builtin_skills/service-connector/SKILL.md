@@ -27,14 +27,15 @@ The app's server makes every request and adds the credentials itself. No agent, 
 5. **Describe each operation**, one per thing an agent or tab needs:
    - `name` (lowercase_words) and a plain `description`;
    - for an API: `method`, `path` (relative to `base_url`, with `{param}` placeholders), `query`, and `body` (a JSON template: a string that is exactly `"{param}"` becomes the value itself, typed);
-   - for MCP: `mcp_tool`, the server's tool name;
+   - for MCP: `mcp_tool`, the server's tool name. To fix argument values the agent must not change, such as `"readOnly": true` or a required `queryType`, give `body` as the tool's arguments with `{param}` placeholders for the parts the agent fills in. Then those values are enforced, and **Test** can run the action without arguments;
    - `params`: each with `name`, `type`, `description` and `required`;
    - `writes`: **true if it creates, changes, sends, deletes, orders or publishes anything.** When in doubt, true. PUT, PATCH, DELETE and GraphQL mutations are always writes.
    - Start with a few read operations that answer real questions. Add writes only when the person asks for them.
 6. **Pick `check`:** a cheap read operation that proves the key works, such as "who am I" or "list workspaces".
 7. **Choose the departments** whose agents may use it.
-8. **Propose it** with `propose_connection(connection_json, why)`. Then guide the person: approve it under Connections, fill in each field, sign in if needed, press **Test**. If the test fails, read the error, fix the connection or the steps, and propose again.
-9. **Show it:** once it works, offer a tool tab that shows its data (Tab-creator Skill, `useService`). Run `call_service` first to see the real shape of the data.
+8. **Propose it** with `propose_connection(connection_json, why)`. Before proposing, read each MCP tool's input schema (`mcp_server_tools`) and make sure the check action supplies every required argument through `body`. Then guide the person: approve it under Connections, fill in each field, sign in if needed, press **Test**. If the test fails, read the error, fix the connection or the steps, and propose again.
+9. **Prove the main action returns something** once it's approved: call it once with `call_service` (a read) and look at the reply. An action that "succeeds" with an empty reply (such as a script runner that doesn't return the script's output) can't send data back directly; say so plainly, and note in its description that results must be saved to a file in the project folder (the service runs on this computer) and read from there.
+10. **Show it:** once it works, offer a tool tab that shows its data (Tab-creator Skill, `useService`). Run `call_service` first to see the real shape of the data.
 
 ## Rules
 

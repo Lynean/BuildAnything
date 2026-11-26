@@ -288,7 +288,8 @@ async def test_there_is_a_hard_limit_on_how_often_it_tries(led, driving):
     for i in range(12):
         dn.set_needed(led, [f"Item {i}"], "w", ELECTRICAL)
         await hq.advance(led, gateway, hq.Services(None))
-    assert sum(1 for c in gateway.calls if c[0] == "lead_electrical") == hq.MAX_DRIVES
+    calls = sum(1 for c in gateway.calls if c[0] == "lead_electrical")
+    assert calls == 2 and calls <= hq.MAX_DRIVES  # two rounds that finished nothing stop it, well before the overall cap
 
 
 @pytest.mark.asyncio
@@ -1176,7 +1177,7 @@ async def test_a_requirement_only_counts_as_yours_if_you_said_it(led):
     fields = {r["fields"]["key"]: r["fields"] for r in led.state().of_type("requirement")}
     assert fields["R1"]["person_said"] and not fields["R1"]["added_because"]
     assert fields["R2"]["added_because"] == "Stops a fire."
-    assert not fields["R3"]["person_said"] and fields["R3"]["added_because"] == "The agent gave no reason."
+    assert not fields["R3"]["person_said"] and fields["R3"]["added_because"] == "From the approved concept and your answers in it."
 
 
 def test_every_needed_item_needs_a_reason(led):

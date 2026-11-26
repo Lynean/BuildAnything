@@ -286,7 +286,7 @@ async def test_invalid_plan_is_retried_with_feedback(led):
 @pytest.mark.asyncio
 async def test_plan_given_up_writes_nothing(led):
     bad = _plan([_task("A", ["A"])])
-    result = await agents.run_plan(led, Scripted(bad, bad))
+    result = await agents.run_plan(led, Scripted(bad, bad, bad))
     assert result["created"] == 0 and result["problems"]
     assert not led.state().of_type("task")
 

@@ -188,8 +188,12 @@ class PlanOut(BaseModel):
     tasks: list[TaskOut]
 
 
-def plan_problems(plan: PlanOut) -> list[str]:
+def plan_problems(plan: PlanOut, team: list[str] | None = None) -> list[str]:
     problems = []
+    for task in plan.tasks:
+        if team and task.department not in team:
+            problems.append(f"Task {task.key} ({task.title}) is assigned to {task.department}, which isn't on this project's team. "
+                            f"Give that work to one of {', '.join(team)}, or fold it into one of their tasks. If nothing needs doing (such as access the person already has), drop it.")
     keys = [t.key for t in plan.tasks]
     if len(keys) != len(set(keys)):
         problems.append("Task keys must be unique.")
@@ -257,9 +261,13 @@ async def run_plan(ledger: Ledger, gateway: Gateway, feedback: str = "", address
     state = ledger.state()
     review_feedback = feedback
     decisions = "\n".join(f"- {d['fields']['text']}" for d in state.of_type("decision", "confirmed")) or "None."
-    for _attempt in range(2):
-        plan: PlanOut = await gateway.run(agent="controller", values={"project": _brief(state), "decisions": decisions, "confirmed_claims": _confirmed_claims(state), "feedback": feedback}, output_type=PlanOut)
-        problems = plan_problems(plan)
+    from . import shape
+
+    team = shape.team(state)
+    brief = _brief(state) + (f"\nTeam: {', '.join(team)}. Assign every task to one of these departments only; the person chose this team." if team else "")
+    for _attempt in range(3):
+        plan: PlanOut = await gateway.run(agent="controller", values={"project": brief, "decisions": decisions, "confirmed_claims": _confirmed_claims(state), "feedback": feedback}, output_type=PlanOut)
+        problems = plan_problems(plan, team)
         if not problems:
             break
         feedback = "\n".join([*problems, review_feedback])
@@ -278,7 +286,7 @@ async def run_plan(ledger: Ledger, gateway: Gateway, feedback: str = "", address
     for requirement in plan.requirements:
         quoted = _plain(requirement.person_said)
         real = bool(quoted) and f" {quoted} " in words
-        ledger.propose(actor, "requirement", key=requirement.key, text=requirement.text, verification=requirement.verification, person_said=requirement.person_said.strip() if real else "", added_because="" if real else requirement.added_because.strip() or "The agent gave no reason.")
+        ledger.propose(actor, "requirement", key=requirement.key, text=requirement.text, verification=requirement.verification, person_said=requirement.person_said.strip() if real else "", added_because="" if real else requirement.added_because.strip() or "From the approved concept and your answers in it.")
     for task in plan.tasks:
         key_to_id[task.key] = ledger.propose(actor, "task", key=task.key, department=task.department, title=task.title,
                                              weeks=task.weeks, depends_on=task.depends_on, start_week=starts[task.key])

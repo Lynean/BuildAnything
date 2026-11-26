@@ -81,11 +81,13 @@ def _addressed(events: list[dict[str, Any]]) -> set[str]:
 
 
 def fixes_to_apply(state: ProjectState, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Waits until every open high finding has a decision, so the plan is revised once, not per click."""
-    opened = gates.open_high_findings(state)
-    if not opened or any(not f.get("decision") for f in opened):
+    """Waits until every open high and medium finding has a decision, so the plan is revised once, not per click.
+    A low finding marked Fix it is included then too."""
+    deciding = gates.open_findings_to_decide(state)
+    if any(not f.get("decision") for f in deciding):
         return []
     done = _addressed(events)
+    opened = [f for f in state.of_type("finding") if f["status"] == "proposed" and f.get("decision")]
     return [f for f in opened if f["decision"]["decision"] == "fix" and f["id"] not in done]
 
 
@@ -94,9 +96,29 @@ GATE_REVIEW = True
 _proposing = threading.Lock()  # An agent can call tools in parallel, which could otherwise add one part twice.
 CLONE_STAGGER_S = 3  # The first clone goes slightly early, so the others find its context already saved at the cheaper rate.
 PARALLEL = "Other jobs in your department are running at the same time. Stay within your items. look_up_project shows the current state and what the others are doing. If you need anything outside your items, report BLOCKED."
-MAX_DRIVES = 3  # Per department and gate, so an agent that can't finish can never spend without limit.
+MAX_DRIVES = 6  # Per department and gate, so an agent that can't finish can never spend without limit.
 ROUTINE = {"QUESTION": ("Fast", 8), "CHANGE_NOTICE": ("Fast", 8)}  # Answering a question or acknowledging a change is routine: cheaper tier, fewer turns.
 LEAD_TURNS = 12
+
+
+def _criterion_owner(state: ProjectState, text: str, team: list[str]) -> str | None:
+    """The department whose planned tasks best match a stage requirement the person will confirm."""
+    words = _meaningful_words(text)
+    scores: dict[str, float] = {}
+    for task in state.of_type("task", "confirmed"):
+        department = task["fields"].get("department")
+        if department in team:
+            overlap = len(words & _meaningful_words(task["fields"].get("title", "") + " " + task["fields"].get("description", "")))
+            scores[department] = scores.get(department, 0) + overlap + 0.01  # owning tasks at all breaks ties
+    return max(scores, key=lambda d: scores[d]) if scores else (team[0] if len(team) == 1 else None)
+
+
+def own_remaining(events: list[dict[str, Any]], department: str) -> list[str]:
+    """What a department said it still has to do itself, from its latest report on real work (not a reply to a question)."""
+    report = next((e["data"] for e in reversed(events) if e["kind"] == "report.filed" and e["data"]["department"] == department and e["data"]["type"] != "ANSWER"), None)
+    if not report or report["type"] not in ("PARTIAL", "BLOCKED"):
+        return []
+    return [n["what"] for n in report.get("needs", []) if n.get("owner") == department]
 
 
 def _owned_work(ledger: Ledger, state: ProjectState, gate: str) -> dict[str, list[str]]:
@@ -107,10 +129,27 @@ def _owned_work(ledger: Ledger, state: ProjectState, gate: str) -> dict[str, lis
     for owner, text in gatereport.blockers(gate, state, ledger):
         if owner in team:
             out.setdefault(owner, []).append(text)
+    # A requirement the person confirms has to be made true first, by the department whose tasks it matches.
+    for criterion in gates.criteria_view(state, gate):
+        if not criterion["met"]:
+            owner = _criterion_owner(state, criterion["text"], team)
+            if owner:
+                out.setdefault(owner, []).append(f"Make this work and show how you checked it, so the person can confirm it: {criterion['text']}")
+    events = ledger.events()
+    for department in team:
+        for what in own_remaining(events, department):
+            if what not in out.get(department, []):
+                out.setdefault(department, []).append(what)
     return out
 
 
-def _drive(ledger: Ledger, state: ProjectState, done: set[str]) -> str | None:
+def _stalled(events: list[dict[str, Any]], department: str) -> bool:
+    """Two rounds of work in a row that finished nothing: a person hears about it instead of paying for a third."""
+    work = [e["data"] for e in events if e["kind"] == "report.filed" and e["data"]["department"] == department and e["data"]["command"] in ("TASK", "RECHECK")][-2:]
+    return len(work) == 2 and all(not r.get("done") for r in work)
+
+
+def _drive(ledger: Ledger, state: ProjectState, done: set[str], busy: set[str] | None = None) -> str | None:
     """Gives each department what the gate needs from it. It runs again only when the facts have changed."""
     gate = gates.current_gate(state)
     if gate is None or gates.phase(state, gate) in ("G0", "G1", "G2"):
@@ -118,9 +157,9 @@ def _drive(ledger: Ledger, state: ProjectState, done: set[str]) -> str | None:
     events = ledger.events()
     waiting_on_person = {r["from"] for r in requests_view(events) if r["status"] == "waiting_for_you"}
     for department, items in _owned_work(ledger, state, gate).items():
-        if designneeds.deferred(ledger, department):
+        if designneeds.deferred(ledger, department) or department in (busy or set()):
             continue
-        if protocol.is_held(events, department) or protocol.bug_open(events, department) or department in waiting_on_person:
+        if protocol.is_held(events, department) or protocol.bug_open(events, department) or department in waiting_on_person or _stalled(events, department):
             continue
         # The same list twice means the agent already tried, so a person hears about it instead of paying again.
         token = hashlib.sha256(json.dumps(items).encode()).hexdigest()[:10]
@@ -141,25 +180,31 @@ def _answers_to_deliver(events: list[dict[str, Any]], done: set[str]) -> dict[st
     return out
 
 
-def next_action(ledger: Ledger) -> str | None:
+def next_action(ledger: Ledger, running: set[str] | None = None, busy: set[str] | None = None) -> str | None:
+    """The next step Headquarters should take. Steps in running are already under way; departments in busy are working,
+    so they get nothing new until they finish, while other departments can be started."""
+    running, busy = running or set(), busy or set()
     state, events = ledger.state(), ledger.events()
     if failure(events):
         return None
     waiting = changes.waiting_review(ledger)
-    if waiting:
+    if waiting and f"review_change:{waiting[0]}" not in running:
         return f"review_change:{waiting[0]}"
-    done = {e["data"]["step"] for e in events if e["kind"] == "hq.finished"}
-    for ids in _answers_to_deliver(events, done).values():
-        return f"deliver:{','.join(ids)}"
-    due = changes.briefings_due(ledger, done)
+    done = {e["data"]["step"] for e in events if e["kind"] == "hq.finished"} | running
+    for sender, ids in _answers_to_deliver(events, done).items():
+        if sender not in busy:
+            return f"deliver:{','.join(ids)}"
+    due = [(c, d) for c, d in changes.briefings_due(ledger, done) if d not in busy]
     if due:
         department = due[0][1]  # One message per department, however many changes were approved together.
-        return f"brief_change:{','.join(c for c, d in due if d == department)}:{department}"
+        step = f"brief_change:{','.join(c for c, d in due if d == department)}:{department}"
+        if step not in running:
+            return step
     for relay in [e for e in events if e["kind"] == "relay.pending"]:
-        if f"relay:{relay['id']}" not in done:
+        if f"relay:{relay['id']}" not in done and relay["data"].get("to") not in busy:
             return f"relay:{relay['id']}"
     for asked in [e for e in events if e["kind"] == "command.person" and e["data"]["type"] == "RECHECK"]:
-        if f"recheck:{asked['id']}" not in done:
+        if f"recheck:{asked['id']}" not in done and asked["data"].get("department") not in busy:
             return f"recheck:{asked['id']}"
     if not _past_concept(ledger, state):
         drafts = state.of_type("concept_draft")
@@ -183,11 +228,13 @@ def next_action(ledger: Ledger) -> str | None:
         reviewed = any(f["fields"].get("plan", 0) == version for f in findings) if version else bool(findings)
         return None if reviewed else "verify"
     # Answering another department's request doesn't count as having made a first proposal.
-    opened = {e["data"]["step"] for e in events if e["kind"] == "hq.finished"}
+    opened = {e["data"]["step"] for e in events if e["kind"] == "hq.finished"} | running
     for department in shape.team(state):
+        if department in busy:
+            continue
         if f"open:{department}" not in opened and not designneeds.declared_none(ledger, department) and not designneeds.deferred(ledger, department):  # No paying for a proposal nobody needs yet.
             return f"open:{department}"
-    if traceability.uncovered(state) and "plan_tests" not in opened and not changes.waiting_review(ledger):
+    if traceability.uncovered(state) and "plan_tests" not in opened and not changes.waiting_review(ledger) and not any(r.startswith("open:") for r in running):
         return "plan_tests"
     answers = traceability.clarifications(events)
     waiting_tests = {traceability._key(r): answers[traceability._key(r)] for r in traceability.uncovered(state) if traceability._key(r) in answers}
@@ -195,16 +242,16 @@ def next_action(ledger: Ledger) -> str | None:
         step = "plan_tests:" + hashlib.sha256(json.dumps(waiting_tests, sort_keys=True).encode()).hexdigest()[:10]
         if step not in opened:
             return step
-    if AUTO_CI and gates.current_gate(state) and ci.pending(ledger):
+    if AUTO_CI and gates.current_gate(state) and ci.pending(ledger) and "ci" not in running:
         return "ci"
-    work = _drive(ledger, state, opened)
+    work = _drive(ledger, state, opened, busy)
     if work:
         return work
     gate = gates.current_gate(state)
     if GATE_REVIEW and gates.phase(state, gate) in ("G4", "G5", "G6") and f"gate_review:{gate}" not in opened:
         from . import gatereport
 
-        if not gatereport.blockers(gate, state, ledger):
+        if not gatereport.blockers(gate, state, ledger) and not running:  # the whole design is reviewed once everyone has stopped
             return f"gate_review:{gate}"
     return None
 
@@ -254,16 +301,18 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
         elif gates.missing("G1", state):
             out.append({"kind": "gate_waiting", "text": f"To finish {gates.stage('G1', state)}: {gates.missing('G1', state)[0]}", "goto": "Journey"})
         else:
-            out.append({"kind": "gate", "gate": "G1", "text": f"Sources are reviewed. {gates.continue_text('G1', state)}{' to start the plan' if gates.next_stage('G1', state) == gates.stage('G2', state) and 'G2' in gates.order(state) else ''}."})
+            gate = "G1" if "G1" in gates.order(state) else gates.current_gate(state) or "G1"
+            out.append({"kind": "gate", "gate": gate, "text": f"Sources are reviewed. {gates.continue_text(gate, state)}{' to start the plan' if gates.next_stage(gate, state) == gates.stage('G2', state) and 'G2' in gates.order(state) else ''}."})
         return out
     if not gates.passed(state, "G2"):
         if next_action(ledger):
             return out
         plan = state.of_type("requirement", "proposed") + state.of_type("task", "proposed")
         high = gates.open_high_findings(state)
-        undecided = [f for f in high if not f.get("decision")]
+        undecided = [f for f in gates.open_findings_to_decide(state) if not f.get("decision")]
         if undecided:
-            out.append({"kind": "findings", "text": f"Decide {len(undecided)} serious problems the Verifier found."})
+            serious = sum(1 for f in undecided if f["fields"]["severity"] == "high")
+            out.append({"kind": "findings", "text": f"Decide {len(undecided)} problems the Verifier found in the plan{f' ({serious} serious)' if serious else ''}, under Independent Verifier below. The plan is revised once they're all decided."})
         fixing = [f for f in high if f.get("decision", {}).get("decision") == "fix"]
         if fixing:
             out.append({"kind": "findings", "text": f"Check that {len(fixing)} fixes worked, then mark them fixed."})
@@ -272,7 +321,8 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
         if not out and gates.missing("G2", state):  # such as a requirement the person wrote for this stage
             out.append({"kind": "gate_waiting", "text": f"To finish {gates.stage('G2', state)}: {gates.missing('G2', state)[0]}", "goto": "Journey"})
         if not out and not gates.missing("G2", state):
-            out.append({"kind": "gate", "gate": "G2", "text": f"The plan is reviewed. {gates.continue_text('G2', state)} to brief the departments."})
+            gate = "G2" if "G2" in gates.order(state) else gates.current_gate(state) or "G2"
+            out.append({"kind": "gate", "gate": gate, "text": f"The plan is reviewed. {gates.continue_text(gate, state)} to brief the departments."})
         return out
     for department in shape.team(state):
         report = protocol.latest(events, department)
@@ -282,6 +332,11 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
     if questions:
         more = f" And {len(questions) - 1} more in the Review queue." if len(questions) > 1 else ""
         out.append({"kind": "question", "text": f"{questions[0]['from']} needs an answer from you: {questions[0]['question'][:180]}{more}"})
+    decided = {e["data"].get("device") for e in events if e["kind"] == "software.autotest"}
+    for device in firmware.devices(ledger.root):
+        if device not in decided and firmware.is_computer(ledger.root, device) and any(not f.get("generated") for f in firmware.scan_workspace(ledger.root, device)):
+            out.append({"kind": "autotest", "device": device, "text": f"Let the app run the {device} program's tests after each Software write? Then Software sees failures and fixes them itself, instead of you running the tests. It installs requirements.txt into the program's own folder. Tick 'Run tests after each agent write' on the Software screen.", "goto": "Software"})
+            break
     current = gates.current_gate(state)
     if current and next_action(ledger) is None:
         from . import gatereport
@@ -447,6 +502,11 @@ def department_tool(ledger: Ledger, gateway: Gateway, sender: str, services: Ser
             ledger.append(SYSTEM, "request.routed", id=request_id, to=sender, action="decline", reason=f"This is {sender}'s own job.")
             return f"This is your own department's job, so handle it yourself. {route.reason}"
         target = route.handler if route.handler in team and route.handler != sender and not looping else department
+        if target in jobs.busy(ledger):  # two jobs in one department would write over each other's work
+            ledger.append(SYSTEM, "request.routed", id=request_id, to=target, action="forward", reason=f"{route.reason} {target} is busy, so it's queued.")
+            ledger.append(SYSTEM, "request.answered", id=request_id, answer=f"Queued: {target} is busy with other work. Headquarters will pass this on as soon as it's free.", outcome="QUEUED")
+            ledger.append(SYSTEM, "relay.pending", sender=sender, to=target, what=question, why=why)
+            return f"{target} is busy with other work right now, so Headquarters queued your request and will pass it on as soon as {target} is free. Carry on with everything you can do without it."
         ledger.append(SYSTEM, "request.routed", id=request_id, to=target, action="forward", reason=route.reason)
         _say(ledger, target, "request", f"{question}\n\nFor: {why}" if why else question, sender)
         try:
@@ -464,26 +524,55 @@ def department_tool(ledger: Ledger, gateway: Gateway, sender: str, services: Ser
     return ask_department
 
 
-def change_tool(ledger: Ledger, department: str) -> Callable[..., dict[str, str]]:
+def change_tool(ledger: Ledger, department: str, person_said: str = "") -> Callable[..., dict[str, str]]:
     def raise_change_request(title: str, why: str, kind: str, target: str, details_json: str) -> dict[str, str]:
-        """Ask for a change to something already agreed. A person decides. kind is part, component, requirement, drop_requirement, deviation, packet, middleware or other. target is the part number, record ID or packet name, or device:src/mid/header.h for middleware. details_json is a JSON object, such as {"material": "PETG"} for a part, {"part_number": "MG90S"} for a component, {"text": "new wording"} for a requirement, or {"what": "what isn't met", "restores": "what would put it right"} for a deviation."""
+        """Ask for a change to something already agreed. A person decides. kind is part, component, requirement, add_requirement, drop_requirement, deviation, packet, middleware or other. target is the part number, record ID or packet name, or device:src/mid/header.h for middleware; empty for add_requirement. details_json is a JSON object, such as {"material": "PETG"} for a part, {"part_number": "MG90S"} for a component, {"text": "new wording"} for a requirement, {"text": "the new requirement", "verification": "how it will be tested"} for add_requirement, or {"what": "what isn't met", "restores": "what would put it right"} for a deviation."""
         try:
             details = json.loads(details_json or "{}")
         except ValueError:
             return {"error": "details_json must be a JSON object."}
+        details = details if isinstance(details, dict) else {}
+        if person_said and kind in ("add_requirement", "requirement"):
+            details["person_said"] = person_said[:600]  # the person's own words in this chat, so the requirement is credited to them
         try:
-            return {"id": changes.propose(ledger, title, why, kind, target, details if isinstance(details, dict) else {}, Actor.agent(department.lower()))}
+            change_id = changes.propose(ledger, title, why, kind, target, details, Actor.agent(department.lower()))
         except changes.ChangeError as exc:
             return {"error": str(exc)}
+        number = next((c["number"] for c in changes.view(ledger) if c["id"] == change_id), "")
+        return {"id": change_id, "status": f"Change {number} is waiting on the Changes screen. An independent review checks it first, then the person approves or rejects it. Nothing has changed yet."}
 
     return raise_change_request
+
+
+SKIP_DIRS = {"ledger", "__pycache__", ".venv", "node_modules", ".git", "generated", "backups"}
+
+
+def project_files(root: Path, limit: int = 120) -> dict[str, Any]:
+    """What's in the project folder, by folder: files anyone added, including the person. Big folders are counted, not listed."""
+    out: dict[str, Any] = {}
+    for folder in sorted({p.parent for p in root.rglob("*") if p.is_file() and not (set(p.relative_to(root).parts) & SKIP_DIRS)}):
+        files = sorted(p.name for p in folder.iterdir() if p.is_file())
+        key = folder.relative_to(root).as_posix() or "."
+        kinds = sorted({Path(f).suffix for f in files})
+        out[key] = files if len(files) <= 12 else f"{len(files)} files ({', '.join(kinds)}), e.g. {', '.join(files[:4])}"
+        if len(out) >= limit:
+            out["…"] = "more folders not listed"
+            break
+    return out
 
 
 def _cad_files(ledger: Ledger) -> dict[str, Any] | None:
     """The CAD export in the project folder, if any, so Software's programs can read the real model's files."""
     meta_file = ledger.root / "mechanics" / "cad" / "meta.json"
     if not meta_file.exists():
-        return None
+        found = sorted((ledger.root / "mechanics" / "cad").rglob("*.urdf")) if (ledger.root / "mechanics" / "cad").is_dir() else []
+        found = [p for p in found if p.name != "ba_prepared.urdf"]
+        if not found:
+            return None
+        model = found[0].relative_to(ledger.root).as_posix()
+        return {"model": model, "folder": found[0].parent.relative_to(ledger.root).as_posix(), "format": "urdf",
+                "from_a_device_folder": f"../../{model}",
+                "note": "A URDF the person added, with its meshes in the folder next to it. Programs in firmware/<device>/ reach it with the relative path given."}
     info = json.loads(meta_file.read_text(encoding="utf-8"))
     model = Path(info["model"])
     if model.name == "ba_prepared.urdf":
@@ -512,7 +601,7 @@ def _department_state(ledger: Ledger, department: str, services: Services) -> di
                 others[d] = text
     simulation = designneeds.simulation_first(ledger)
     scope = {"simulation_first": f"The person wants the software and simulation first ({simulation}). No parts, wiring, firmware or buying until they switch hardware on: don't propose or ask for any."} if simulation else {}
-    return {**_own_state(ledger, department, services), **scope, "other_departments_latest": others,
+    return {**_own_state(ledger, department, services), **scope, "project_files": project_files(ledger.root), "other_departments_latest": others,
             "deliverables": "Every department's reports and files can be read with list_deliverables, read_deliverable and read_department_reports. Look there before asking for something."}
 
 
@@ -689,7 +778,20 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
                 return {"error": "Give a JSON object of assembly names, each with a list of part numbers."}
             return {"id": ledger.propose(Actor.agent("mechanical"), "assembly_plan", assemblies={str(k).strip(): [str(p).strip() for p in v] for k, v in plan.items()}, why=why.strip())}
 
-        tools += [propose_part, set_assemblies, WebSearchTool()]
+        def save_deliverable(name: str, content: str) -> dict[str, Any]:
+            """Save a file Software and the person can read: an interface table, joint limits, collision shapes. name is a short file name ending in .md, .csv, .json or .txt; it goes in mechanics/deliverables/."""
+            clean = name.strip().replace("\\", "/").split("/")[-1]
+            if not re.fullmatch(r"[A-Za-z0-9_.-]{1,60}\.(md|csv|json|txt)", clean):
+                return {"error": "Use a short file name ending in .md, .csv, .json or .txt, such as cad_interface.md."}
+            if len(content) > 200_000:
+                return {"error": "Keep it under 200,000 characters."}
+            target = root / "mechanics" / "deliverables" / clean
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            ledger.append(Actor.agent("mechanical"), "deliverable.saved", department="Mechanical", path=f"mechanics/deliverables/{clean}", chars=len(content))
+            return {"saved": f"mechanics/deliverables/{clean}", "note": "Software reads it with read_deliverable."}
+
+        tools += [propose_part, set_assemblies, save_deliverable, WebSearchTool()]
     elif department == "Software":
         writes = {"count": 0}
 
@@ -880,7 +982,10 @@ async def talk_to_department(ledger: Ledger, gateway: Gateway, department: str, 
 
 
 async def talk_to_concept(ledger: Ledger, gateway: Gateway, message: str, services: Services) -> None:
-    await hq_agents.run_concept(ledger, gateway, message, [department_tool(ledger, gateway, "Headquarters", services)])
+    tools: list[Any] = [department_tool(ledger, gateway, "Headquarters", services)]
+    if concept_approved(ledger) and message.strip():  # once there's an agreed plan, the person can ask Headquarters to change it
+        tools.append(change_tool(ledger, "Headquarters", person_said=message.strip()))
+    await hq_agents.run_concept(ledger, gateway, message, tools)
 
 
 def hand_off_tool(ledger: Ledger, sender: str) -> Callable[..., Any]:
@@ -1013,8 +1118,11 @@ async def run_step(ledger: Ledger, gateway: Gateway, action: str, services: Serv
         text = "The person answered through Headquarters.\n\n" + "\n\n".join(f"You asked: {r['question']}\n\nAnswer: {r['answer']}" for r in answered)
         sender = answered[0]["from"]
         if sender in DEPARTMENTS:
+            remaining = own_remaining(events, sender)
+            if remaining:
+                text += "\n\nNow carry on with your outstanding work, using these answers:\n" + "\n".join(f"- {r}" for r in remaining)
             _say(ledger, sender, "request", text, "You")
-            await run_lead(ledger, gateway, sender, text, services, nested=True)
+            await run_lead(ledger, gateway, sender, text, services, nested=True, sent=protocol.command("TASK", remaining, "Your outstanding work is finished, or you say exactly what still stops it.") if remaining else None)
         else:
             await talk_to_concept(ledger, gateway, text, services)
         for request_id in ids:
@@ -1033,7 +1141,7 @@ async def run_step(ledger: Ledger, gateway: Gateway, action: str, services: Serv
         await hq_agents.run_gate_review(ledger, gateway, action.split(":")[1])
     elif action.startswith("relay:"):
         data = next(e["data"] for e in events if e["id"] == action.split(":")[1])
-        await department_tool(ledger, gateway, data["sender"], services)(data["to"], data["what"], f"{data['sender']}'s work, which is waiting on it")
+        await department_tool(ledger, gateway, data["sender"], services)(data["to"], data["what"], data.get("why") or f"{data['sender']}'s work, which is waiting on it")
     elif action.startswith("recheck:"):
         data = next(e["data"] for e in events if e["id"] == action.split(":")[1])
         problems = [p for s in ci.view(ledger, gates.current_gate(state)) if s["owner"] == data["department"] for p in s["problems"]]
@@ -1084,21 +1192,75 @@ def label_for(action: str) -> str:
     return f"{action[5:]} is preparing its first proposal" if action.startswith("open:") else LABELS[action]
 
 
+def department_of(ledger: Ledger, action: str) -> str | None:
+    """The department a step belongs to, if it's a department's own work. Those can run side by side."""
+    if action.startswith("open:"):
+        return action[5:]
+    if action.startswith("drive:"):
+        return action.split(":")[2]
+    if action.startswith("brief_change:"):
+        return action.split(":")[2]
+    if action.startswith(("deliver:", "relay:", "recheck:")):
+        events = ledger.events()
+        if action.startswith("deliver:"):
+            first = action.split(":", 1)[1].split(",")[0]
+            sender = next((r["from"] for r in requests_view(events) if r["id"] == first), None)
+            return sender if sender in DEPARTMENTS else None
+        data = next((e["data"] for e in events if e["id"] == action.split(":", 1)[1]), {})
+        return data.get("to") if action.startswith("relay:") else data.get("department")
+    return None
+
+
+MAX_STEPS = 24
+
+
 async def advance(ledger: Ledger, gateway: Gateway, services: Services, guard: Callable[[Any], Awaitable[Any]] | None = None) -> None:
-    """Runs steps until a person is needed. Each step takes the project's lock on its own, so chats can go between steps."""
-    for _ in range(16):
-        action = next_action(ledger)
-        if action is None:
-            return
-        label = label_for(action)
-        ledger.append(SYSTEM, "hq.started", step=action, label=label)
+    """Runs steps until a person is needed. Headquarters' own steps (concept, research, plan, review) take the project's
+    lock one at a time. A department's work runs in the background, one job per department, so while one department
+    works Headquarters can start another; it waits only when there's nothing else to start."""
+    running: dict[asyncio.Task, tuple[str, str | None]] = {}
+
+    async def finish(task: asyncio.Task) -> bool:
+        action, _department = running.pop(task)
         try:
-            work = run_step(ledger, gateway, action, services)
-            await (guard(work) if guard else work)
-        except Exception as exc:
-            ledger.append(SYSTEM, "hq.failed", step=action, label=label, message=str(getattr(exc, "detail", "") or exc)[:300] or type(exc).__name__)
-            return
-        ledger.append(SYSTEM, "hq.finished", step=action, label=label)
+            task.result()
+        except Exception as exc:  # noqa: BLE001 - one department's failure is recorded; the others carry on
+            ledger.append(SYSTEM, "hq.failed", step=action, label=label_for(action), message=str(getattr(exc, "detail", "") or exc)[:300] or type(exc).__name__)
+            return False
+        ledger.append(SYSTEM, "hq.finished", step=action, label=label_for(action))
+        return True
+
+    try:
+        for _ in range(MAX_STEPS):
+            for task in [t for t in running if t.done()]:
+                await finish(task)
+            busy = {d for _a, d in running.values() if d} | jobs.busy(ledger)
+            action = next_action(ledger, {a for a, _d in running.values()}, busy)
+            if action is not None:
+                label = label_for(action)
+                department = department_of(ledger, action)
+                ledger.append(SYSTEM, "hq.started", step=action, label=label)
+                if department:
+                    running[asyncio.ensure_future(run_step(ledger, gateway, action, services))] = (action, department)
+                    continue
+                try:
+                    work = run_step(ledger, gateway, action, services)
+                    await (guard(work) if guard else work)
+                except Exception as exc:
+                    ledger.append(SYSTEM, "hq.failed", step=action, label=label, message=str(getattr(exc, "detail", "") or exc)[:300] or type(exc).__name__)
+                    return
+                ledger.append(SYSTEM, "hq.finished", step=action, label=label)
+                continue
+            if not running:
+                return
+            finished, _pending = await asyncio.wait(list(running), return_when=asyncio.FIRST_COMPLETED)
+            for task in finished:
+                await finish(task)
+    finally:
+        if running:  # don't leave department work behind half-recorded
+            await asyncio.wait(list(running))
+            for task in list(running):
+                await finish(task)
 
 
 def status(ledger: Ledger) -> dict[str, Any]:

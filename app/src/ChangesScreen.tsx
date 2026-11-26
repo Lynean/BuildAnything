@@ -8,7 +8,7 @@ interface Change { id: string; number: number; title: string; why: string; kind:
 interface Option { id: string; label: string; }
 interface View { changes: Change[]; options: Record<string, Option[]>; running: boolean; }
 
-const KINDS: [string, string][] = [["part", "A part"], ["component", "An electrical component"], ["requirement", "A requirement's wording"], ["deviation", "Accept that a requirement won't be met"], ["drop_requirement", "Remove a requirement"], ["packet", "A data packet"], ["other", "Something else"]];
+const KINDS: [string, string][] = [["part", "A part"], ["component", "An electrical component"], ["add_requirement", "Add a new requirement"], ["requirement", "A requirement's wording"], ["deviation", "Accept that a requirement won't be met"], ["drop_requirement", "Remove a requirement"], ["packet", "A data packet"], ["other", "Something else"]];
 const PART_FIELDS: [string, string][] = [["material", "New material"], ["process", "New process"], ["qty", "New quantity"], ["mass_g", "New mass (g)"], ["unit_cost", "New unit cost"]];
 const STATUS: Record<string, [string, string]> = { open: ["Waiting for your decision", "warn"], approved: ["Approved", "good"], rejected: ["Rejected", ""] };
 
@@ -75,10 +75,11 @@ function NewChange({ view, base, onView, onClose }: { view: View; base: string; 
       <label className="field">What's the change?<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Use metal-gear servos" /></label>
       <label className="field">Why is it needed?<textarea rows={2} value={why} onChange={(e) => setWhy(e.target.value)} /></label>
       <label className="field">What does it change?<select value={kind} onChange={(e) => { setKind(e.target.value); setTarget(""); setDetails({}); }}>{KINDS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
-      {kind !== "other" && <label className="field">Which one?<select value={target} onChange={(e) => setTarget(e.target.value)}><option value="">{choices.length ? "Choose" : "None available yet"}</option>{choices.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></label>}
+      {kind !== "other" && kind !== "add_requirement" && <label className="field">Which one?<select value={target} onChange={(e) => setTarget(e.target.value)}><option value="">{choices.length ? "Choose" : "None available yet"}</option>{choices.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select></label>}
       {kind === "part" && <div className="pkt-grid">{PART_FIELDS.map(([k, l]) => <label className="field" key={k}>{l}<input value={details[k] ?? ""} onChange={(e) => set(k, e.target.value)} /></label>)}</div>}
       {kind === "component" && <label className="field">Replace it with<input value={details.part_number ?? ""} onChange={(e) => set("part_number", e.target.value)} placeholder="Part number" /></label>}
       {kind === "deviation" && <><label className="field">What isn't met?<input value={details.what ?? ""} onChange={(e) => set("what", e.target.value)} placeholder="Tracking only reaches 1.5 m, not 2 m" /></label><label className="field">What would put it right?<input value={details.restores ?? ""} onChange={(e) => set("restores", e.target.value)} placeholder="A wider-angle camera in the next build" /></label></>}
+      {kind === "add_requirement" && <><label className="field">The new requirement<input value={details.text ?? ""} onChange={(e) => set("text", e.target.value)} placeholder="The real-arm interface targets a PCA9685 servo driver" /></label><label className="field">How it will be tested (optional)<input value={details.verification ?? ""} onChange={(e) => set("verification", e.target.value)} /></label></>}
       {kind === "requirement" && <><label className="field">New wording<input value={details.text ?? ""} onChange={(e) => set("text", e.target.value)} /></label><label className="field">How it will be tested (optional)<input value={details.verification ?? ""} onChange={(e) => set("verification", e.target.value)} /></label></>}
       {error && <p className="error" role="alert">{error}</p>}
       <div className="row"><button className="primary" disabled={!!busy || !title.trim() || !why.trim()} onClick={submit}>See the impact</button><button onClick={onClose}>Cancel</button></div>

@@ -81,7 +81,7 @@ export default function ServicesScreen({ side }: { side: "external" | "internal"
     if (!approve && !reason) return;
     run(approve ? "Approving" : "Rejecting", async () => setView(await call<View>(`/services/requests/${r.id}/${approve ? "approve" : "reject"}`, "POST", { reason, project: projectId })));
   };
-  const send = (text: string) => { setSending(text); run("", async () => { try { setMessages(await call<Message[]>(`/services/${side}/chat`, "POST", { message: text, project: projectId })); await load(); setSkills(await call<Skill[]>("/skills")); } finally { setSending(""); } }); };
+  const send = (text: string) => { setSending(text); run("", async () => { try { setMessages(await call<Message[]>(`/services/${side}/chat`, "POST", { message: text, project: projectId })); await load(); setSkills(await call<Skill[]>("/skills")); window.dispatchEvent(new Event("ba:connections")); window.dispatchEvent(new Event("ba:tabs")); } finally { setSending(""); } }); };
   const decideSkill = (s: Skill, approve: boolean) => {
     const reason = approve ? "" : window.prompt("Why not? External Service reads this.", "") ?? "";
     if (!approve && !reason) return;

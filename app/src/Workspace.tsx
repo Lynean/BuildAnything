@@ -197,7 +197,7 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
   };
   const isComputer = computers.includes(device);
   const runTests = () => {
-    if (!window.confirm("Run this program's tests on your computer? The code was written by an agent, so check it first.")) return;
+    if (!window.confirm("Run this program's tests on your computer? The code was written by an agent, so check it first. The first run installs its requirements.txt into the program's own folder (.venv).")) return;
     run("Running the tests", async () => {
       const r = await call<{ result: { ok: boolean; summary: string; lines: string[] }; view: Elec }>(`${base}/firmware/${device}/tests`, "POST", { confirmed: true });
       setElec(r.view);
@@ -206,7 +206,7 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
   };
   const toggleAutotest = () => {
     const allowed = !setup?.autotest;
-    if (allowed && !window.confirm("Let the app run this program's tests automatically after each agent write? The code is agent-written and runs on your computer, without asking each time. You can switch this off at any time.")) return;
+    if (allowed && !window.confirm("Let the app run this program's tests automatically after each agent write? The code is agent-written and runs on your computer, without asking each time. The app first installs the packages in its requirements.txt into the program's own folder (.venv). You can switch this off at any time.")) return;
     run(allowed ? "Allowing automatic test runs" : "Stopping automatic test runs", async () => {
       await call(`${base}/firmware/${device}/autotest`, "POST", { allowed });
       setSetup(await call<Setup>(`${base}/firmware/${device}/setup`));
@@ -291,7 +291,7 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
                       </>}
                   <button className="small" disabled={!!busy} onClick={build}>{isComputer ? "Check code" : "Build"}</button>
                   {isComputer && <button className="small" disabled={!!busy} onClick={runTests}>Run tests</button>}
-                  {isComputer && <label className="small" title="The agent's code runs on your computer without asking each time"><input type="checkbox" checked={!!setup?.autotest} disabled={!!busy} onChange={toggleAutotest} /> Run tests after each agent write</label>}
+                  {isComputer && <label className="small" title="The agent's code and tests run on your computer without asking each time, in the program's own Python environment with its requirements.txt installed"><input type="checkbox" checked={!!setup?.autotest} disabled={!!busy} onChange={toggleAutotest} /> Run tests after each agent write (installs its requirements)</label>}
                 </div>
               </div>
               {file.blocks.length === 0

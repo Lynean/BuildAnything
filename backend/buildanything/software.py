@@ -6,6 +6,7 @@ import asyncio
 import ast
 import json
 import re
+import os
 import shutil
 import subprocess
 import sys
@@ -35,8 +36,16 @@ class DependencyOut(BaseModel):
     url: str
 
 
+class EditOut(BaseModel):
+    path: str = Field(description="An existing file of this device, relative to the device folder, such as app.py")
+    find: str = Field(description="Exact text copied from the file as it is now, long enough to occur exactly once (include a few surrounding lines)")
+    replace: str = Field(description="The text that takes its place. Keep the indentation right")
+    why: str = Field(default="", description="One line: what this edit fixes or adds")
+
+
 class SoftwareOut(BaseModel):
-    files: list[fw.FileOut]
+    files: list[fw.FileOut] = Field(default_factory=list, description="New files, or files you rewrite almost entirely. For a small or medium change to an existing file, use edits instead")
+    edits: list[EditOut] = Field(default_factory=list, description="Precise changes to existing files, applied in order: each replaces one exact piece of text. Use these for fixes and additions to files that already exist, across as many files as needed")
     dependencies: list[DependencyOut]
     setup_steps: list[StepOut]
     not_done: str = Field(default="", description="Anything the goal asked for that you didn't do, such as a file you were asked to change and left alone, and why. Empty if you did all of it")
@@ -130,6 +139,63 @@ def _check_script(path: Path) -> str | None:
     return "" if done.returncode == 0 else ((done.stderr or done.stdout).strip().splitlines() or ["The file couldn't be read."])[0][:300]
 
 
+def apply_edits(root: Path, device: str, edits: list[EditOut]) -> tuple[dict[str, str], list[str]]:
+    """Applies each edit to the file's text in memory, the way a patch is applied. Nothing is written if any edit fails.
+    Blocks whose code changed get a fresh hash, so their descriptions stay attached; a person reviews them as changed."""
+    base = root / "firmware" / device
+    texts: dict[str, str] = {}
+    problems: list[str] = []
+    for i, e in enumerate(edits, 1):
+        path = fw.normalize_paths(device, [fw.FileOut(path=e.path, owner="Software", blocks=[])])[0].path
+        target = base / path
+        if ".." in path or not fw.HOST_PATH.match(path):
+            problems.append(f"Edit {i}: {e.path} isn't a file this program can change.")
+            continue
+        if path not in texts:
+            if not target.is_file():
+                problems.append(f"Edit {i}: {path} doesn't exist. Create it under files instead.")
+                continue
+            texts[path] = target.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+        count = texts[path].count(e.find) if e.find else 0
+        if count != 1:
+            problems.append(f"Edit {i} on {path}: the text to find occurs {count} times; it must occur exactly once. Copy it exactly from the file (read_code shows it) and include more surrounding lines.")
+            continue
+        texts[path] = texts[path].replace(e.find, e.replace, 1)
+    for path, text in texts.items():
+        if path.endswith(".py"):
+            problems += [f"{path} after the edits: {p}" for p in python_problems(fw.parse(text)["outside"] + "\n" + "\n\n".join(b["code"] for b in fw.parse(text)["blocks"]) if fw.parse(text)["blocks"] else text, path)]
+            for name in fw.OUTSIDE_METHOD.findall("\n".join(b["code"] for b in fw.parse(text)["blocks"])):
+                problems.append(f"{path} after the edits: {name}(self, ...) is at the top level, outside its class.")
+        texts[path] = _rehash(text)
+    return texts, problems
+
+
+def _rehash(text: str) -> str:
+    """Refreshes each block's hash after an edit, keeping its title and description."""
+    out, meta_line, body = [], None, []
+    for line in text.split("\n"):
+        start = fw.BLOCK_START.match(line)
+        if start and meta_line is None:
+            meta_line, body = line, []
+        elif fw.BLOCK_END.match(line) and meta_line is not None:
+            m = fw.BLOCK_START.match(meta_line)
+            try:
+                meta = json.loads(m.group(1))
+                meta["hash"] = fw.code_hash("\n".join(body))
+                meta_line = meta_line[:m.start(1)] + json.dumps(meta, ensure_ascii=False) + meta_line[m.end(1):]
+            except (ValueError, AttributeError):
+                pass
+            out += [meta_line, *body, line]
+            meta_line, body = None, []
+        elif meta_line is not None:
+            body.append(line)
+        else:
+            out.append(line)
+    if meta_line is not None:
+        out += [meta_line, *body]
+    return "\n".join(out)
+
+
 def syntax_problems(files: list[fw.FileOut]) -> list[str]:
     problems = []
     for file in files:
@@ -138,13 +204,45 @@ def syntax_problems(files: list[fw.FileOut]) -> list[str]:
     return problems
 
 
+def import_check(root: Path, device: str, timeout: int = 60) -> list[str]:
+    """Imports each top-level module of the program in a fresh Python, without running its main, so a program that
+    can't even start (a name used before it exists, a method outside its class at import time) is caught before the
+    person tries it. Modules whose third-party imports aren't installed here are skipped, not failed."""
+    base = root / "firmware" / device
+    names = sorted(p.stem for p in base.glob("*.py") if not p.stem.startswith("test_"))
+    if not names:
+        return []
+    script = (
+        "import importlib, sys, traceback\n"
+        "bad = []\n"
+        f"for name in {names!r}:\n"
+        "    try:\n"
+        "        importlib.import_module(name)\n"
+        "    except ModuleNotFoundError as e:\n"
+        "        if e.name and e.name.split('.')[0] not in " + repr(names) + ":\n"
+        "            continue\n"
+        "        bad.append(f'{name}: {type(e).__name__}: {e}')\n"
+        "    except BaseException as e:\n"
+        "        tb = traceback.extract_tb(e.__traceback__)\n"
+        "        where = next((f'{f.filename.split(chr(92))[-1]} line {f.lineno}' for f in reversed(tb) if not f.filename.startswith('<')), '')\n"
+        "        bad.append(f'{name}: {type(e).__name__}: {e} ({where})')\n"
+        "print('\\n'.join(bad))\n"
+    )
+    try:
+        done = subprocess.run([device_python(root, device)[0], "-c", script], cwd=base, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                              env={**os.environ, "PYTHONPATH": str(base), "PYTHONDONTWRITEBYTECODE": "1", "MPLBACKEND": "Agg"})
+    except subprocess.TimeoutExpired:
+        return [f"Importing the program took over {timeout} s: something runs at import time instead of in main()."]
+    return [f"Starting the program fails: {line}" for line in done.stdout.splitlines() if line.strip()]
+
+
 IMPORT_NAMES = {"pyserial": "serial", "opencv-python": "cv2", "pillow": "PIL", "pyyaml": "yaml", "python-dateutil": "dateutil", "scikit-learn": "sklearn", "beautifulsoup4": "bs4"}  # Packages whose import name differs.
 
 
 def build(root: Path, device: str, declared: list[str] | None = None) -> dict[str, Any]:
     """Checks the code without running it. Agent-written code only runs when a person starts it."""
     base = root / "firmware" / device
-    wanted = {p for p in base.rglob("*") if p.is_file() and p.suffix in fw.HOST_SUFFIXES and "node_modules" not in p.parts and "generated" not in p.relative_to(base).parts}
+    wanted = {p for p in base.rglob("*") if p.is_file() and p.suffix in fw.HOST_SUFFIXES and not ({"node_modules", ".venv", "__pycache__"} & set(p.parts)) and "generated" not in p.relative_to(base).parts}
     local = {p.stem for p in base.iterdir() if p.suffix == ".py"} | {p.name for p in base.iterdir() if p.is_dir()}
     known, allowed = _generated_fields(base), {re.sub(r"[-_.]", "", IMPORT_NAMES.get(d.split("/")[-1].lower(), d.split("/")[-1].lower())) for d in (declared or [])}
     errors, warnings, python, scripts, skipped = [], [], 0, 0, 0
@@ -181,6 +279,39 @@ def build(root: Path, device: str, declared: list[str] | None = None) -> dict[st
     return {"ok": not errors, "ran": True, "errors": errors, "warnings": warnings, "detail": detail, "fingerprint": debugging.fingerprint("\n".join(errors)) if errors else None}
 
 
+def device_python(root: Path, device: str, install: bool = False) -> tuple[str, str]:
+    """The Python this program runs in: firmware/<device>/.venv with requirements.txt installed. Installing happens only
+    when a person allowed the tests to run (on the Software screen), and again only when requirements.txt changes.
+    Returns the interpreter, and a plain problem if the install failed."""
+    import hashlib
+
+    base = root / "firmware" / device
+    env = base / ".venv"
+    python = env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not install:
+        return (str(python) if python.exists() else sys.executable), ""
+    requirements = base / "requirements.txt"
+    want = hashlib.sha256(requirements.read_bytes()).hexdigest() if requirements.exists() else "none"
+    stamp = env / ".requirements-hash"
+    if python.exists() and stamp.exists() and stamp.read_text(encoding="utf-8") == want:
+        return str(python), ""
+    uv = shutil.which("uv")
+    try:
+        if not python.exists():
+            make = [uv, "venv", str(env), "--python", f"{sys.version_info.major}.{sys.version_info.minor}"] if uv else [sys.executable, "-m", "venv", str(env)]
+            subprocess.run(make, capture_output=True, text=True, timeout=300, check=True)
+        if requirements.exists():
+            add = [uv, "pip", "install", "--python", str(python), "-r", str(requirements)] if uv else [str(python), "-m", "pip", "install", "-r", str(requirements)]
+            subprocess.run(add, capture_output=True, text=True, timeout=900, check=True, cwd=base)
+    except subprocess.CalledProcessError as exc:
+        tail = " ".join((exc.stderr or exc.stdout or "").strip().splitlines()[-3:])[:400]
+        return (str(python) if python.exists() else sys.executable), f"Installing requirements.txt failed: {tail}"
+    except subprocess.TimeoutExpired:
+        return (str(python) if python.exists() else sys.executable), "Installing requirements.txt took too long and was stopped."
+    stamp.write_text(want, encoding="utf-8")
+    return str(python), ""
+
+
 def run_tests(ledger: Ledger, root: Path, device: str, confirmed: bool, actor: Actor, timeout: int = 120) -> dict[str, Any]:
     """Runs agent-written tests on this computer, so a person must start it each time."""
     base = root / "firmware" / device
@@ -190,8 +321,12 @@ def run_tests(ledger: Ledger, root: Path, device: str, confirmed: bool, actor: A
         raise SoftwareError("Tests can only run for computer programs.")
     automatic = actor.kind == "system" and autotest_allowed(ledger, device)  # only once a person allowed it; anyone else needs a person
     ledger.append(actor, "software.tests_auto" if automatic else "software.tests", device=device)
+    python, problem = device_python(root, device, install=True)
+    if problem:
+        return {"ok": False, "lines": [problem], "summary": problem}
+    start = ["discover", "-v", "-s", "tests"] if (base / "tests").is_dir() and not list(base.glob("test_*.py")) else ["discover", "-v"]
     try:
-        done = subprocess.run([sys.executable, "-m", "unittest", "discover", "-v"], cwd=base, capture_output=True, text=True, timeout=timeout, env=conn.clean_environment())
+        done = subprocess.run([python, "-m", "unittest", *start], cwd=base, capture_output=True, text=True, timeout=timeout, env={**conn.clean_environment(), "PYTHONPATH": str(base), "MPLBACKEND": "Agg"})
     except subprocess.TimeoutExpired:
         lines, ok = [f"The tests were stopped after {timeout} seconds."], False
     else:
@@ -237,7 +372,7 @@ def unconnected(root: Path, device: str, written: list[str]) -> list[str]:
     base = root / "firmware" / device
     if not base.is_dir():
         return []
-    python = {p.relative_to(base).with_suffix("").as_posix().replace("/", "."): p for p in base.rglob("*.py") if "generated" not in p.relative_to(base).parts and "__pycache__" not in p.parts}
+    python = {p.relative_to(base).with_suffix("").as_posix().replace("/", "."): p for p in base.rglob("*.py") if "generated" not in p.relative_to(base).parts and "__pycache__" not in p.parts and ".venv" not in p.parts}
     tests = {m for m, p in python.items() if p.stem.startswith("test_") or p.stem.endswith("_test") or "tests" in p.relative_to(base).parts}
     trees, entries = {}, []
     for module, path in python.items():
@@ -255,7 +390,7 @@ def unconnected(root: Path, device: str, written: list[str]) -> list[str]:
                     reached.add(candidate)
                     queue.append(candidate)
     loaders = {p.relative_to(base).as_posix(): p.read_text(encoding="utf-8", errors="replace") for m, p in python.items() if m in reached}
-    loaders |= {p.relative_to(base).as_posix(): p.read_text(encoding="utf-8", errors="replace") for p in base.rglob("*") if p.suffix in (".js", ".ts", ".html") and "node_modules" not in p.parts and "generated" not in p.parts}
+    loaders |= {p.relative_to(base).as_posix(): p.read_text(encoding="utf-8", errors="replace") for p in base.rglob("*") if p.suffix in (".js", ".ts", ".html") and "node_modules" not in p.parts and "generated" not in p.parts and ".venv" not in p.parts}
     out = []
     for path in written:
         rel = Path(path)
@@ -289,6 +424,10 @@ def cad_brief(root: Path) -> str:
 
     meta_file = root / "mechanics" / "cad" / "meta.json"
     info = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else None
+    if not info and (root / "mechanics" / "cad").is_dir():
+        added = next((p for p in sorted((root / "mechanics" / "cad").rglob("*.urdf")) if p.name != "ba_prepared.urdf"), None)
+        if added:
+            info = {"format": "urdf", "model": added.relative_to(root / "mechanics" / "cad").as_posix()}
     if not info or info.get("format") != "urdf":
         return "No CAD model has been imported." if not info else f"An MJCF model is imported at ../../mechanics/cad/{info['model']}."
     model = Path(info["model"])
@@ -325,6 +464,7 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
     attempts, feedback = 0, ""
     last: list[str] = []
     asked_to_connect = tested = False
+    test_summary = ""
     read_tools = [search_open_source, fw.code_reader(root, device), deliverables.tools(ledger)[1]]
     for attempt in range(3):
         attempts += 1
@@ -332,13 +472,31 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
             agent="software", output_type=SoftwareOut, tools=read_tools, request_limit=16,
             values={"device": device, "goal": goal, "packets": itf.summary_for_agents(state), "current_code": fw.outline_code(root, device, goal), "components": sorted(fw.component_names(state)), "cad_model": cad_brief(root), "feedback": feedback},
         )
-        merged, kept_problems = fw.merge_unchanged(root, device, output.files)
+        merged, kept_problems = fw.merge_unchanged(root, device, fw.normalize_paths(device, output.files))
         output = output.model_copy(update={"files": merged})
-        last = kept_problems + path_problems(output.files) + fw.documentation_problems_host(output.files) + syntax_problems(output.files) + fw.component_problems(output.files, fw.component_names(ledger.state()))
+        edited, edit_problems = apply_edits(root, device, output.edits)
+        last = kept_problems + edit_problems + path_problems(output.files) + fw.documentation_problems_host(output.files) + syntax_problems(output.files) + fw.component_problems(output.files, fw.component_names(ledger.state()))
+        if not output.files and not output.edits and not last:
+            if output.not_done.strip() and attempt < 2:
+                feedback = ("You returned no files and no edits, but you say this isn't done: " + output.not_done.strip()[:600]
+                            + "\nMake those changes now, with edits for existing files and files for new ones. Only if something outside the code stops you, say exactly what in not_done.")
+                continue
+            last = []  # deliberately changed nothing; reported below
         if last:
             feedback = "\n".join(last)
             continue
+        backup = {p: (root / "firmware" / device / p).read_text(encoding="utf-8") for p in edited if (root / "firmware" / device / p).is_file()}
         fw.write_files(root, device, output.files, host=True)
+        for path, text in edited.items():
+            (root / "firmware" / device / path).write_text(text, encoding="utf-8", newline="\n")
+        starting = await asyncio.to_thread(import_check, root, device)
+        if starting and attempt < 2:
+            feedback = "The files were written, but the program can't even be imported. Fix this with edits:\n" + "\n".join(starting)
+            continue
+        if starting:
+            for path, text in backup.items():  # leave the last version that imported, not a broken one
+                (root / "firmware" / device / path).write_text(text, encoding="utf-8", newline="\n")
+        output = output.model_copy(update={"files": output.files + [fw.FileOut(path=p, owner="Software", blocks=[]) for p in edited if p not in {f.path for f in output.files}]})
         gaps = itf.unwired(root, ledger.state(), device)
         if gaps and attempt == 0:
             feedback = "It runs, but it isn't complete. Return the corrected files.\n" + "\n".join(gaps)
@@ -351,6 +509,7 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
         if autotest_allowed(ledger, device) and not tested and attempt < 2:
             tested = True
             run = await asyncio.to_thread(run_tests, ledger, root, device, True, Actor.system("software"))
+            test_summary = run["summary"]
             if not run["ok"]:
                 feedback = "The program's tests failed after this write. Fix the code, or a test that demands something that doesn't exist yet (skip it with the reason):\n" + "\n".join(run["lines"][-25:])
                 continue
@@ -367,7 +526,7 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
         if loose or output.not_done.strip():
             out["unfinished"] = "The program people start doesn't do all of the goal yet. Resolve what not_done and not_connected say before reporting DONE."
         if tested or autotest_allowed(ledger, device):
-            out["tests"] = "Ran after writing." if tested else "Allowed, but not run on this attempt."
+            out["tests"] = f"Ran after writing: {test_summary}" if tested else "Allowed, but not run on this attempt."
         else:
             out["tests"] = "Not run: the person hasn't allowed automatic test runs for this program, so they must start them on the Software screen."
         if not output.files:  # the writer chose to change nothing: that's a decision with a reason, not a broken tool

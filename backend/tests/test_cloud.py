@@ -211,3 +211,20 @@ def test_every_example_connection_is_valid():
 
     for name in ("connection-github", "connection-altium-365", "connection-fusion-mcp"):
         cloud.validate(json.loads(tabs.example(name)["connection.json"]))
+
+
+def test_an_mcp_action_can_pin_arguments_so_test_works_and_read_only_is_enforced(store, tmp_path):
+    server = tmp_path / "echo_server.py"
+    server.write_text("from fastmcp import FastMCP\nmcp = FastMCP('t')\n@mcp.tool\ndef run(queryType: str, readOnly: bool, script: str = '') -> dict:\n    return {'queryType': queryType, 'readOnly': readOnly, 'script': script}\nif __name__ == '__main__':\n    mcp.run()\n", encoding="utf-8")
+    m = {"id": "echo", "name": "Echo", "summary": "Echoes.", "kind": "mcp", "mcp_target": f'"{sys.executable}" "{server}"', "fields": [], "auth": {"type": "none"}, "departments": ["Mechanical"], "check": "documents",
+         "operations": [
+             {"name": "documents", "description": "List documents.", "writes": False, "mcp_tool": "run", "body": {"queryType": "document", "readOnly": True}},
+             {"name": "inspect", "description": "Run a read-only script.", "writes": False, "mcp_tool": "run", "body": {"queryType": "script", "readOnly": True, "script": "{script}"}, "params": [{"name": "script"}]},
+         ]}
+    store.propose(m, "", AGENT)
+    store.decide("echo", True, "", HUMAN)
+    assert run(store.call("echo", "documents", {}, AGENT))["data"] == {"queryType": "document", "readOnly": True, "script": ""}  # Test can run it
+    out = run(store.call("echo", "inspect", {"script": "print(1)"}, AGENT))["data"]
+    assert out["readOnly"] is True and out["script"] == "print(1)"
+    with pytest.raises(cloud.CloudError, match="doesn't take"):
+        run(store.call("echo", "inspect", {"script": "x", "readOnly": False}, AGENT))  # the agent can't turn read-only off

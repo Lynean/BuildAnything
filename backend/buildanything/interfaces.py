@@ -304,7 +304,7 @@ def _device_source(root: Path, device: str) -> dict[str, str]:
     out = {}
     for path in base.rglob("*"):
         parts = path.relative_to(base).parts
-        if not path.is_file() or path.suffix not in (".c", ".cpp", ".ino", ".h", ".py", ".ts", ".tsx", ".js") or {".pio", "generated", "node_modules", "__pycache__", "tests", "test"} & set(parts) or path.stem.startswith("test_") or path.stem.endswith(("_test", "_tests")) or path.name in ("ba_packets.h", "ba_pins.h"):
+        if not path.is_file() or path.suffix not in (".c", ".cpp", ".ino", ".h", ".py", ".ts", ".tsx", ".js") or {".pio", "generated", "node_modules", "__pycache__", ".venv", "tests", "test"} & set(parts) or path.stem.startswith("test_") or path.stem.endswith(("_test", "_tests")) or path.name in ("ba_packets.h", "ba_pins.h"):
             continue
         out[path.suffix] = out.get(path.suffix, "") + path.read_text(encoding="utf-8", errors="replace")
     return out

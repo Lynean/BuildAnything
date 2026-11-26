@@ -86,7 +86,7 @@ export function TrailBubble({ projectId, agentId, color, onClose, onOpen }: { pr
                 <p>{s.text}</p>
               </div>
             ))}
-            {!gone && <div className="trail-step ts-now"><span className="trail-kind">Now</span><p>{trail.activity}<span className="dots" /></p></div>}
+            {!gone && <div className="trail-step ts-now"><span className="trail-kind">Now · {since(trail.steps.length ? Date.parse(trail.steps[trail.steps.length - 1].at) / 1000 : trail.started)}</span><p>{trail.activity}<span className="dots" /></p>{trail.activity === "Thinking" && <small className="hint">The model is working through this step; its summary appears when the step ends.</small>}</div>}
             {gone && <p className="hint">It has finished. Its result is in the department's chat and the Ledger.</p>}
           </>
         )}

@@ -112,13 +112,17 @@ def purpose(gate: str, state: ProjectState | None = None) -> str:
 
 def next_stage(gate: str, state: ProjectState | None = None) -> str | None:
     ids = order(state) if state is not None else ORDER
+    if gate not in ids and state is not None:  # a built-in stage this project's plan doesn't have: go from where it is
+        gate = current_gate(state) or gate
     later = ids[ids.index(gate) + 1:] if gate in ids else []
     return stage(later[0], state) if later else None
 
 
 def continue_text(gate: str, state: ProjectState | None = None) -> str:
     following = next_stage(gate, state)
-    return f"Continue to {following} on the Journey screen" if following else "Finish the project on the Journey screen"
+    if following:
+        return f"Continue to {following} on the Journey screen"
+    return "Finish the project on the Journey screen" if state is None or gate == (order(state) or [gate])[-1] else "Continue on the Journey screen"
 
 
 def current_gate(state: ProjectState) -> str | None:
@@ -190,6 +194,11 @@ def mark_criterion(ledger: Ledger, gate: str, index: int, met: bool, note: str, 
     ledger.append(actor, "gate.criterion_met", gate=gate, index=index, met=bool(met), note=note.strip(), text=criteria[index])
 
 
+def open_findings_to_decide(state: ProjectState) -> list[dict]:
+    """High and medium findings a person hasn't closed: the plan is revised once all of them have a decision."""
+    return [f for f in state.of_type("finding") if f["fields"]["severity"] in ("high", "medium") and f["status"] == "proposed"]
+
+
 def open_high_findings(state: ProjectState) -> list[dict]:
     """Every high finding a person hasn't closed. A later Verifier run can't clear one."""
     return [f for f in state.of_type("finding") if f["fields"]["severity"] == "high" and f["status"] == "proposed"]
@@ -201,8 +210,6 @@ def decide_finding(ledger: Ledger, finding_id: str, decision: str, reason: str, 
     finding = state.records.get(finding_id)
     if not finding or finding["type"] != "finding":
         raise GateError("Finding not found.")
-    if finding["fields"]["severity"] != "high":
-        raise GateError("Only high-severity findings need a decision.")
     if finding["status"] != "proposed":
         raise GateError("This finding is already closed.")
     if decision not in ("fix", "fixed", "accept", "later", "dismiss"):

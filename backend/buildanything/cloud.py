@@ -180,6 +180,19 @@ def validate(raw: dict[str, Any]) -> Manifest:
 STORES: dict[str, "Store"] = {}
 
 
+def _empty(data: Any) -> bool:
+    """Nothing came back: no data, or only blank text."""
+    if data is None:
+        return True
+    if isinstance(data, str):
+        return not data.strip() or data.strip().lower() in ("null", "none", "{}", "[]", "ok", "success")
+    if isinstance(data, (list, tuple)):
+        return all(_empty(x) for x in data)
+    if isinstance(data, dict):
+        return not data or all(_empty(v) for v in data.values())
+    return False
+
+
 def store_for(app_root: Path) -> "Store | None":
     return STORES.get(str(Path(app_root).resolve()))
 
@@ -393,9 +406,22 @@ class Store:
             raise
         except Exception as exc:  # noqa: BLE001 - the reason goes back in plain words
             ok, detail = False, {"ok": False, "error": f"{type(exc).__name__}: {self._redact(m, str(exc))[:400]}"}
+        empty = bool(ok) and _empty(detail.get("data"))
         self.ledger.append(actor, "conn.called", id=conn_id, operation=operation, project=project, ok=ok, status=detail.get("status"), seconds=round(time.time() - started, 2),
-                           params={k: str(v)[:80] for k, v in params.items()})
+                           params={k: str(v)[:80] for k, v in params.items()}, empty=empty)
+        if empty:
+            detail = {**detail, "note": "It succeeded but sent nothing back. If you need its results, have it save them to a file in the project folder and read that file."}
         return detail
+
+    def returns_nothing(self, conn_id: str) -> set[str]:
+        """Operations whose last two successful calls returned nothing, such as a script runner that doesn't send back
+        the script's output. Agents are told, so the next project doesn't fall into the same trap."""
+        seen: dict[str, list[bool]] = {}
+        for e in self.ledger.events():
+            d = e["data"]
+            if e["kind"] == "conn.called" and d["id"] == conn_id and d.get("ok"):
+                seen.setdefault(d["operation"], []).append(bool(d.get("empty")))
+        return {op for op, results in seen.items() if len(results) >= 2 and all(results[-2:])}
 
     async def _auth(self, m: Manifest) -> tuple[dict[str, str], dict[str, str]]:
         a, headers, query = m.auth, {}, {}
@@ -452,7 +478,8 @@ class Store:
                 env.update({f.id.upper(): self._key(m.id, f.id) or "" for f in m.fields})
             transport = StdioTransport(command=spec["command"], args=spec["args"], env=env)
         async with Client(transport) as client:
-            result = await client.call_tool(op.mcp_tool, params)
+            _path, _query, template = self._render(op, params)  # fixed arguments from the template; unknown ones refused
+            result = await client.call_tool(op.mcp_tool, template if isinstance(op.body, dict) else params)
         data = result.data if getattr(result, "data", None) is not None else [getattr(c, "text", str(c)) for c in result.content]
         out = self._redact(m, json.dumps(data, default=str))
         return {"ok": not getattr(result, "is_error", False), "status": "mcp", "data": json.loads(out) if len(out) <= MAX_RESULT else out[:MAX_RESULT], "truncated": len(out) > MAX_RESULT}
@@ -521,6 +548,8 @@ class Store:
         for c in self.listing():
             m = c["approved"]
             if m and department in m["departments"]:
+                hollow = self.returns_nothing(m["id"])
                 out.append({"connection": m["id"], "name": m["name"], "summary": m["summary"], "ready": c["state"] == "connected",
-                            "operations": [{"name": o["name"], "description": o["description"], "changes_something": o["writes"], "params": {p["name"]: f"{p['type']}{'' if p['required'] else ', optional'}: {p['description']}" for p in o["params"]}} for o in m["operations"]]})
+                            "operations": [{"name": o["name"], "description": o["description"], "changes_something": o["writes"], "params": {p["name"]: f"{p['type']}{'' if p['required'] else ', optional'}: {p['description']}" for p in o["params"]},
+                                            **({"warning": "Its recent calls succeeded but sent nothing back. It still works for things it does on this computer: to get results, make what it runs save them to a file in the project folder (such as mechanics/cad/ for a URDF export, or a JSON file of measurements), then read that file."} if o["name"] in hollow else {})} for o in m["operations"]]})
         return out

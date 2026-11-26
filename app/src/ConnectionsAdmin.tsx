@@ -55,7 +55,13 @@ export default function ConnectionsAdmin() {
   const { busy, error, run } = useBusy();
   const [view, setView] = useState<View | null>(null);
   const [openIds, setOpenIds] = useState<Record<string, boolean>>({});  // a panel stays open or shut as the person left it
-  useEffect(() => { call<View>("/connections").then(setView).catch(() => undefined); }, []);
+  useEffect(() => {
+    const load = () => call<View>("/connections").then(setView).catch(() => undefined);
+    load();
+    const t = window.setInterval(load, 5000);  // agents propose connections and changes while this screen is open
+    window.addEventListener("ba:connections", load);
+    return () => { window.clearInterval(t); window.removeEventListener("ba:connections", load); };
+  }, []);
   if (!view) return null;
   const decide = (c: Conn, approve: boolean) => {
     const reason = approve ? "" : window.prompt("Why not? External Service reads this.", "") ?? "";
@@ -85,8 +91,8 @@ export default function ConnectionsAdmin() {
         const m = (c.proposed ?? c.approved)!;
         const [label, tone] = STATE[c.state];
         return (
-          <details key={c.id} className="conn" open={openIds[c.id] ?? c.state !== "connected"} onToggle={(e) => { const isOpen = (e.currentTarget as HTMLDetailsElement).open; setOpenIds((o) => (o[c.id] === isOpen ? o : { ...o, [c.id]: isOpen })); }}>
-            <summary><b>{m.name}</b> <em className={`pill ${tone}`}>{label}</em> <small className="dim-text">{where(m)}</small>{c.last && <small className="dim-text"> · last used {new Date(c.last.at).toLocaleString()} ({c.last.operation}, {c.last.ok ? "worked" : "failed"})</small>}</summary>
+          <details key={c.id} className="conn" open={openIds[c.id] ?? (c.state !== "connected" || !!c.proposed)} onToggle={(e) => { const isOpen = (e.currentTarget as HTMLDetailsElement).open; setOpenIds((o) => (o[c.id] === isOpen ? o : { ...o, [c.id]: isOpen })); }}>
+            <summary><b>{m.name}</b> <em className={`pill ${tone}`}>{label}</em>{c.approved && c.proposed && <em className="pill warn">New version waiting for you</em>} <small className="dim-text">{where(m)}</small>{c.last && <small className="dim-text"> · last used {new Date(c.last.at).toLocaleString()} ({c.last.operation}, {c.last.ok ? "worked" : "failed"})</small>}</summary>
             <p>{m.summary}</p>
             <p className="hint">For {m.departments.join(", ")}. Signs in with {m.auth.type === "oauth2" ? `your account (${m.auth.oauth?.grant === "authorization_code" ? "browser sign-in" : "app ID and secret"}; access: ${m.auth.oauth?.scopes.join(" ")})` : m.auth.type === "none" ? "nothing" : "a key you paste"}.{m.sources.length > 0 && <> Sources: {m.sources.map((u) => <a key={u} href={u} target="_blank" rel="noreferrer">{new URL(u).hostname} </a>)}</>}</p>
             <Operations m={m} />

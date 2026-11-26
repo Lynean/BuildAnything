@@ -155,6 +155,11 @@ def step(live: LiveAgent, kind: str, text: str) -> None:
     del live.steps[:-MAX_STEPS]
 
 
+def busy(ledger: Ledger) -> set[str]:
+    """Departments with a job running or waiting, however it was started: Headquarters, the person's chat, or another department."""
+    return {j.department for j in _JOBS.get(str(ledger.root), {}).values()}
+
+
 def running(ledger: Ledger) -> list[dict[str, Any]]:
     """Every agent working right now on this project, including ones inside a department's job."""
     return [{"id": a.id, "agent": a.agent, "area": a.area, "title": a.title, "activity": a.activity, "job": a.job, "started": a.started, "steps": len(a.steps)}

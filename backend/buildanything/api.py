@@ -832,10 +832,21 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
     @app.post("/api/connections/requests/{request_id}/decide")
     async def connection_request_decide(request_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         """Only a person lets an agent's change go to an outside service, one request at a time."""
+        request = next((r for r in cloud_store.requests() if r["request"] == request_id), None)
         try:
             result = await cloud_store.decide_write(request_id, body.get("approve") is True, str(body.get("reason", "")), Actor.human())
         except cloud.CloudError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if request and request.get("project") in project_roots() and request.get("department") in hq.DEPARTMENTS:
+            # The agent's turn ended when it asked, so tell it the outcome and let it carry on.
+            approved = body.get("approve") is True
+            reply = json.dumps(result.get("data"), default=str)[:6000] if approved else ""
+            text = (f"The person {'approved' if approved else 'rejected'} your request to run {request['operation']} on {request['id']}."
+                    + (f" Reason: {body.get('reason')}" if not approved and body.get("reason") else "")
+                    + (f" It {'worked' if result.get('ok') else 'failed'}: {result.get('error') or reply}" if approved else "")
+                    + " Carry on with your work.")
+            led = ledger(request["project"])
+            asyncio.create_task(guarded(request["project"], hq.talk_to_department(led, gateway(led), request["department"], text, services)))
         return {**connections_view(), "result": result}
 
     @app.post("/api/projects/{project_id}/tabs/{tab_id}/service")
@@ -1068,7 +1079,8 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
         threaded = tools
         earlier = "\n".join(f"{m['role']}: {m['text'][:600]}" for m in service_messages(side)[-10:])
         state = led.state()
-        values = {"message": message, "project": f"{state.meta.get('name')} (team: {', '.join(shape.team(state))})", "earlier": earlier, "skills": tabkit.builtin_skills(connector=side == "external")}
+        values = {"message": message, "project": f"{state.meta.get('name')} (team: {', '.join(shape.team(state))})", "earlier": earlier, "skills": tabkit.builtin_skills(connector=side == "external"),
+                  "project_folder": f"{led.root} (files saved here, such as mechanics/cad/ for CAD or simulation models, are seen by every department)"}
         from .threads import _threaded
 
         try:

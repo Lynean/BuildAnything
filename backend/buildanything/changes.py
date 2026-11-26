@@ -15,7 +15,7 @@ from . import memo, depgraph, mechanical as mech, traceability
 from .gateway import Gateway
 from .ledger import Actor, Ledger, LedgerError, ProjectState
 
-KINDS = ("part", "component", "requirement", "drop_requirement", "deviation", "packet", "middleware", "other")
+KINDS = ("part", "component", "requirement", "add_requirement", "drop_requirement", "deviation", "packet", "middleware", "other")
 NEEDS_A_REASON = ("drop_requirement", "deviation")
 PART_FIELDS = ("material", "process", "qty", "mass_g", "unit_cost", "remove")  # remove: true takes the part off the list
 DEPARTMENTS = ("Electrical", "Mechanical", "Software", "Procurement")
@@ -145,6 +145,10 @@ def compute_impact(ledger: Ledger, change: dict[str, Any]) -> list[dict[str, str
         return _component_impact(ledger, state, target, details) + retests
     if kind == "requirement":
         return _requirement_impact(state, target) + retests
+    if kind == "add_requirement":
+        from . import shape
+
+        return [_item(d, "New requirement", str(details.get("text", ""))[:200], "Plan for it, and a test will be written to prove it") for d in shape.team(state)]
     if kind in NEEDS_A_REASON:
         tests = [t for t in traceability.view(ledger)["tests"] if key in t["covers"]]
         verb = "No longer needed for this requirement" if kind == "drop_requirement" else "Its result no longer blocks the Prove stage"
@@ -171,6 +175,9 @@ def propose(ledger: Ledger, title: str, why: str, kind: str, target: str, detail
     elif kind == "component":
         if not record or record["type"] != "component" or not str(details.get("part_number", "")).strip():
             raise ChangeError("Choose a component and name its replacement.")
+    elif kind == "add_requirement":
+        if not str(details.get("text", "")).strip():
+            raise ChangeError("Write the new requirement.")
     elif kind == "requirement":
         if not record or record["type"] != "requirement" or not str(details.get("text", "")).strip():
             raise ChangeError("Choose a requirement and write its new wording.")
@@ -345,6 +352,12 @@ def _apply(ledger: Ledger, change: dict[str, Any], actor: Actor) -> None:
         new = ledger.propose(actor, "requirement", key=old["fields"].get("key", ""), text=str(details["text"]).strip(), verification=str(details.get("verification") or old["fields"].get("verification", "")), replaces=target)
         ledger.append(actor, "record.confirmed", id=new)
         ledger.append(SYSTEM, "record.superseded", id=target)
+    elif kind == "add_requirement":
+        keys = [r["fields"].get("key", "") for r in state.of_type("requirement")]
+        numbers = [int(k[1:]) for k in keys if k[:1] == "R" and k[1:].isdigit()]
+        new = ledger.propose(actor, "requirement", key=f"R{max(numbers, default=0) + 1}", text=str(details["text"]).strip(),
+                             verification=str(details.get("verification", "")).strip(), person_said=str(details.get("person_said") or details["text"]).strip())
+        ledger.append(actor, "record.confirmed", id=new)
     elif kind == "drop_requirement":
         old = state.records[target]
         ledger.append(SYSTEM, "requirement.dropped", id=target, key=old["fields"].get("key", ""), text=old["fields"]["text"], why=change["why"], change=change["number"])

@@ -14,7 +14,7 @@ from .ledger import Ledger
 
 TEXT_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".c", ".cpp", ".h", ".ino", ".ini", ".json", ".md", ".txt", ".urdf", ".xml", ".csv", ".html", ".css"}
 AREAS = ("firmware", "mechanics", "interfaces", "reports", "bench")
-SKIP_PARTS = {"meshes", "__pycache__", ".pio", "node_modules", "build", "obj", ".cache"}
+SKIP_PARTS = {"meshes", "__pycache__", ".pio", "node_modules", "build", "obj", ".cache", ".venv"}
 MAX_CHARS = 24_000
 MAX_FILES = 300
 

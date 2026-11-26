@@ -247,7 +247,8 @@ export default function Headquarters() {
           <h1>{project.meta.name}</h1>
           <details className="hq-brief"><summary>{(project.meta.aim || "No aim set").slice(0, 110)}{(project.meta.aim || "").length > 110 ? "…" : ""}</summary><p><b>Aim:</b> {project.meta.aim || "Not set"}</p><p><b>Scope:</b> {project.meta.scope || "Not set"}</p></details>
         </div>
-        <div className="hq-spend-ring" title={`AI spend: $${project.spent.toFixed(3)} of $${project.limit.toFixed(2)}`}>
+        <div className="hq-spend-ring" role="button" tabIndex={0} title={`AI spend: $${project.spent.toFixed(3)} of $${project.limit.toFixed(2)}. Click to change the limit.`}
+          onClick={() => { const v = window.prompt("AI spending limit for this project, in US dollars:", project.limit.toFixed(2)); const usd = v ? Number(v) : NaN; if (usd > 0) run("Saving", async () => { await call(`${p}/limit`, "POST", { usd }); setProject(await call<Project>(p)); }); }}>
           <svg viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="22" className="ring-track" /><circle cx="28" cy="28" r="22" className={`ring-part ${pct > 85 ? "hot" : ""}`} strokeDasharray={`${(pct / 100) * spendRing} ${spendRing}`} /></svg>
           <span><b>${project.spent.toFixed(2)}</b><small>of ${project.limit.toFixed(0)}</small></span>
         </div>
@@ -334,10 +335,10 @@ export default function Headquarters() {
             <div className="claim-list">{claims.map((c) => <div key={c.id} className="claim-row"><span>{c.fields.statement}</span><q className="quote">{c.fields.quote}</q><span className="dim-text small-text">{c.fields.url ? <a href={c.fields.url} target="_blank" rel="noreferrer">{c.fields.title}</a> : c.fields.title}</span>{c.status === "proposed" ? <Decide rec={c} onDecide={decide} /> : <span className="pill good">✓</span>}</div>)}</div>
           )}
         </details>
-        <details className="card hq-fold" open={highFindings.some((f) => f.status === "proposed")}>
+        <details className="card hq-fold" open={openFindings.some((f) => !f.decision || f.decision.decision === "fix")}>
           <summary><b>Independent Verifier</b><span className="fold-count">{openFindings.length}</span>{highFindings.length > 0 && <span className="pill bad">{highFindings.length} high</span>}</summary>
           {openFindings.length === 0 ? <p className="hint">Reviews the plan automatically as soon as it's written.</p> : (
-            <div className="claim-list">{openFindings.map((f) => <div key={f.id} className="claim-row"><span className={`pill ${f.fields.severity === "high" ? "bad" : f.fields.severity === "medium" ? "warn" : ""}`}>{f.fields.severity}</span><span>{f.fields.safety && <span className="pill bad">Safety</span>}{f.fields.kind === "beyond_scope" && <span className="pill warn">Beyond what you asked</span>} <Linked text={f.fields.text} /></span>{f.fields.severity === "high" ? <FindingDecision rec={f} onDecide={decideFinding} /> : null}</div>)}</div>
+            <div className="claim-list">{openFindings.map((f) => <div key={f.id} className="claim-row finding-row"><span className={`pill ${f.fields.severity === "high" ? "bad" : f.fields.severity === "medium" ? "warn" : ""}`}>{f.fields.severity}</span><span>{f.fields.safety && <span className="pill bad">Safety</span>}{f.fields.kind === "beyond_scope" && <span className="pill warn">Beyond what you asked</span>} <Linked text={f.fields.text} /></span><FindingDecision rec={f} onDecide={decideFinding} /></div>)}</div>
           )}
         </details>
       </div>
