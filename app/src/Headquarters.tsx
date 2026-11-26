@@ -169,9 +169,11 @@ export default function Headquarters() {
   // Headquarters shows the project chosen with the switcher at the top left, and follows it when it changes.
   useEffect(() => {
     const show = (id: string) => { if (id) call<Project>(`/projects/${id}`).then((x) => { setProject(x); setCreating(false); }).catch(() => setProject(null)); };
-    show(selectedProject());
     const follow = (e: Event) => show((e as CustomEvent<string>).detail);
-    const start = () => { setProject(null); setCreating(true); };
+    const flag = window as unknown as { baNewProject?: boolean };
+    const start = () => { flag.baNewProject = false; setProject(null); setCreating(true); };
+    if (flag.baNewProject) start();  // "New project" was chosen before Headquarters opened, so the event may have come too early
+    else show(selectedProject());
     window.addEventListener("ba:project", follow);
     window.addEventListener("ba:new-project", start);
     return () => { window.removeEventListener("ba:project", follow); window.removeEventListener("ba:new-project", start); };
@@ -252,6 +254,9 @@ export default function Headquarters() {
           <svg viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="22" className="ring-track" /><circle cx="28" cy="28" r="22" className={`ring-part ${pct > 85 ? "hot" : ""}`} strokeDasharray={`${(pct / 100) * spendRing} ${spendRing}`} /></svg>
           <span><b>${project.spent.toFixed(2)}</b><small>of ${project.limit.toFixed(0)}</small></span>
         </div>
+        <button className={`small ${hq?.needs.some((n) => n.kind === "paused") ? "primary" : ""}`} disabled={!!busy} title="Paused: running jobs finish and nothing new starts"
+          onClick={() => { const pause = !hq?.needs.some((n) => n.kind === "paused"); run(pause ? "Pausing" : "Resuming", async () => { setProject(await call<Project>(`${p}/hq/pause`, "POST", { paused: pause })); setHq(await call<Hq>(`${p}/hq`)); }); }}>
+          {hq?.needs.some((n) => n.kind === "paused") ? "Resume" : "Pause"}</button>
         <details className="hq-more">
           <summary aria-label="Saving, handoff and team">⋯</summary>
           <div className="hq-more-body">
@@ -278,7 +283,7 @@ export default function Headquarters() {
           {hq?.running && <div className="agent-thinking" role="status"><i /><i /><i /><span>{hq.running}</span></div>}
           {hq?.needs.map((n) => (
             <div className={`need-card ${n.kind}`} key={n.kind + n.text}>
-              <b>{n.kind === "failed" ? "Stopped" : n.kind === "gate" ? "Ready to continue" : "Needs you"}</b>
+              <b>{n.kind === "failed" ? "Stopped" : n.kind === "paused" ? "Paused" : n.kind === "gate" ? "Ready to continue" : "Needs you"}</b>
               <span><Linked text={n.text} /></span>
               <span className="decide">
                 {n.kind === "failed" && <button className="primary small" disabled={!!busy} onClick={() => run("Restarting", async () => setProject(await call<Project>(`${p}/hq/retry`, "POST")))}>Try again</button>}

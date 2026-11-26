@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { call, useBusy, useProject } from "./api";
+import { ScreenChip } from "./Linked";
 import { Rendered } from "./AgentChat";
 import ShapeEditor, { type ShapeView } from "./ShapeEditor";
 
@@ -70,7 +71,7 @@ export default function Journey() {
       <div className="hq-head"><h1>Journey</h1><select aria-label="Project" value={projectId} onChange={(e) => setProjectId(e.target.value)}>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
       <p className="intro">From idea to a device that's proven to work. The team works through each stage on its own. You're only stopped where a decision is truly yours.</p>
       {error && <p className="error" role="alert">{error}</p>}
-      <p><label title="Saves money while there's no hardware: no parts, wiring, firmware or prices"><input type="checkbox" checked={!!simulation} disabled={!!busy} onChange={toggleSimulation} /> Simulation first{simulation ? `: ${simulation}. Electrical and Procurement wait until you switch hardware on.` : " (hardware work waits until you switch it on)"}</label></p>
+      <p className="hint">Simulation first: {simulation ? `on (${simulation}). Electrical and Procurement wait until you switch hardware on.` : "off."} Change it in <ScreenChip screen="Settings">Settings</ScreenChip>.</p>
 
       <ol className="journey-track" style={{ ["--progress-ratio" as string]: String(Math.min(1, done / (stops.length - 1))) }}>
         {stops.map((s, i) => (

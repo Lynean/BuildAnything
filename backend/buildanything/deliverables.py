@@ -65,11 +65,11 @@ def department_reports(ledger: Ledger, department: str, count: int = 3) -> dict[
 
 def tools(ledger: Ledger) -> list[Any]:
     def list_deliverables() -> dict[str, Any]:
-        """Free. List every department's latest reports and every file the project has produced (code, CAD and collision results, bench results, stage reports). Look here before asking another department for something it may already have made."""
+        """Free. List every department's latest reports and every file the project has produced (code, CAD exports, deliverables, results, stage reports). Look here before asking another department for something it may already have made."""
         return index(ledger)
 
     def read_deliverable(path: str, start: int = 0) -> dict[str, Any]:
-        """Free. Read one file from list_deliverables, such as mechanics/cad/collision.json or firmware/laptop/app.py. start continues a long file."""
+        """Free. Read one file from list_deliverables, such as a table in mechanics/deliverables/ or firmware/laptop/app.py. start continues a long file."""
         return read(ledger, path, start)
 
     def read_department_reports(department: str, count: int = 3) -> dict[str, Any]:

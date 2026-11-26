@@ -102,7 +102,10 @@ def open_or_repeat(ledger: Ledger, title: str, error: str, domain: str, actor: A
         if s["fingerprint"] == mark and s["status"] == "open":
             ledger.append(actor, "debug.repeated", id=s["id"], error=error)
             updated = sessions(ledger)[s["id"]]
-            if updated["domain"] == "code" and updated["rung"] >= 4:
+            from . import firmware
+
+            computer = bool(device) and firmware.is_computer(ledger.root, device)  # a program on a computer has no board or wiring to blame
+            if updated["domain"] == "code" and updated["rung"] >= 4 and not computer:
                 ledger.append(Actor.system("debug-ladder"), "debug.moved", id=s["id"], to="device", reason="The same error came back after code fixes, so this is now a possible device issue.")
             return sessions(ledger)[s["id"]]
     session_id = f"dbg_{uuid.uuid4().hex[:10]}"

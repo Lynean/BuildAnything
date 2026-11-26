@@ -433,15 +433,28 @@ class Installs:
 def ask(app_ledger: Ledger, project: str, department: str, capability: str, why: str) -> str:
     if len(why.strip()) < 12:
         return "Say what you need the tool to do, specifically."
-    open_asks = [e for e in app_ledger.events() if e["kind"] == "service.asked" and e["data"]["capability"] == capability and e["data"]["project"] == project]
-    if open_asks:
-        return "That has already been asked for. Reception will tell the person."
+    for open_ask in asks(app_ledger):
+        if open_ask["project"] == project and (open_ask["capability"].strip().lower() == capability.strip().lower() or _same_need(open_ask["capability"] + " " + open_ask["why"], capability + " " + why)):
+            return f"That's already asked for, by {open_ask['department']}: \"{open_ask['capability']}\". The person will see it at Reception; carry on meanwhile."
     app_ledger.append(Actor.agent(department.lower()), "service.asked", project=project, department=department, capability=capability.strip()[:120], why=why.strip()[:600])
     return "Asked. The person will see it at Reception, with the tools that can provide it."
 
 
+_FILLER = {"the", "and", "for", "with", "from", "into", "that", "this", "its", "their", "run", "use", "using", "tool", "tools", "project", "files", "file", "existing", "check", "checks", "results", "data", "plus", "only", "make", "provide", "established"}
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in _FILLER}
+
+
+def _same_need(a: str, b: str) -> bool:
+    """Two requests for what is really one tool, worded differently by different jobs."""
+    x, y = _words(a), _words(b)
+    return bool(x and y) and len(x & y) / min(len(x), len(y)) >= 0.6
+
+
 def asks(app_ledger: Ledger) -> list[dict[str, Any]]:
-    closed = {e["data"]["id"] for e in app_ledger.events() if e["kind"] == "service.ask_closed"}
+    closed = {e["data"]["id"] for e in app_ledger.events() if e["kind"] in ("service.ask_closed", "service.ask_answered")}
     return [{**e["data"], "id": e["id"], "at": e["at"]} for e in app_ledger.events() if e["kind"] == "service.asked" and e["id"] not in closed]
 
 

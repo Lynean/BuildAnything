@@ -274,22 +274,10 @@ def register(app: FastAPI, get_ledger: Callable[[str], Ledger], get_gateway: Cal
             raise HTTPException(413, "That PDF is too large.")
         if not data.startswith(b"%PDF-"):
             raise HTTPException(400, "That file isn't a PDF.")
-        digest = hashlib.sha256(data).hexdigest()[:10]
-        folder = led.root / "datasheets"
-        folder.mkdir(exist_ok=True)
-        target = folder / f"{component_id}-{digest}.pdf"
-        target.write_bytes(data)
         try:
-            texts = datasheets.page_texts(target)
-        except Exception as exc:
-            target.unlink(missing_ok=True)
-            raise HTTPException(400, "That PDF couldn't be read.") from exc
-        matches = datasheets.part_matches(record["fields"]["part_number"], texts)
-        if doc == "datasheet":
-            doc = documents.detect_kind(texts) or doc  # A board's user manual uploaded as its datasheet is filed as what it says it is.
-        same_part = [c["id"] for c in led.state().of_type("component") if c["status"] != "rejected" and c["fields"]["part_number"].lower() == record["fields"]["part_number"].lower()]
-        for target_id in {component_id, *same_part}:  # The same servo used on three joints is one datasheet.
-            led.propose(Actor.human(), "datasheet", component=target_id, file=target.name, filename=filename[:200], pages=len(texts), part_match=matches, doc=doc)
+            datasheets.save_pdf(led, component_id, data, filename, doc, Actor.human())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return view(led, led.state())
 
     @app.get(prefix + "/datasheets/{datasheet_id}/file")

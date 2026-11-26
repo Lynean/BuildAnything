@@ -15,6 +15,9 @@ from . import memo, depgraph, mechanical as mech, traceability
 from .gateway import Gateway
 from .ledger import Actor, Ledger, LedgerError, ProjectState
 
+import threading as _threading
+
+_NUMBERING = _threading.Lock()
 KINDS = ("part", "component", "requirement", "add_requirement", "drop_requirement", "deviation", "packet", "middleware", "other")
 NEEDS_A_REASON = ("drop_requirement", "deviation")
 PART_FIELDS = ("material", "process", "qty", "mass_g", "unit_cost", "remove")  # remove: true takes the part off the list
@@ -198,8 +201,9 @@ def propose(ledger: Ledger, title: str, why: str, kind: str, target: str, detail
         if not str(details.get("change", "")).strip():
             raise ChangeError("Say what changes in the header, in details as change.")
     change_id = f"chg_{uuid.uuid4().hex[:10]}"
-    number = sum(1 for e in ledger.events() if e["kind"] == "change.proposed") + 1
-    ledger.append(actor, "change.proposed", id=change_id, number=number, title=title.strip(), why=why.strip(), type=kind, target=target, details=details)
+    with _NUMBERING:  # two changes raised at the same moment must not share a number
+        number = sum(1 for e in ledger.events() if e["kind"] == "change.proposed") + 1
+        ledger.append(actor, "change.proposed", id=change_id, number=number, title=title.strip(), why=why.strip(), type=kind, target=target, details=details)
     return change_id
 
 

@@ -188,22 +188,26 @@ def context(app_ledger: Ledger, department: str) -> str:
 
 def hand_off(ledger: Ledger, department: str, tool: str, title: str, what_it_changes: str, filename: str, script: str, steps: list[str], report_back: str, actor: Actor) -> dict[str, Any]:
     name = Path(filename.strip()).name
+    by_hand = not name and not script.strip()  # steps only, such as clicking through a dialog
     ext = "".join(Path(name).suffixes[-1:]).lower() if name else ""
-    if not re.match(r"^[A-Za-z0-9_.-]{3,80}$", name) or ext not in SCRIPT_EXT:
-        raise SkillError(f"Name the file plainly with one of these endings: {', '.join(sorted(SCRIPT_EXT))}.")
-    if not script.strip() or len(script) > 200_000:
+    if not by_hand and (not re.match(r"^[A-Za-z0-9_.-]{3,80}$", name) or ext not in SCRIPT_EXT):
+        raise SkillError(f"Name the file plainly with one of these endings: {', '.join(sorted(SCRIPT_EXT))}, or leave filename and script empty for steps done by hand.")
+    if not by_hand and (not script.strip() or len(script) > 200_000):
         raise SkillError("Give the script or file content.")
     steps = [s.strip() for s in steps if s.strip()][:15]
     if not steps or len(what_it_changes.strip()) < 10:
         raise SkillError("Say what it will change, and give the steps to run it.")
     handoff_id = f"ho_{uuid.uuid4().hex[:10]}"
-    folder = ledger.root / "handoffs" / department.lower()
-    folder.mkdir(parents=True, exist_ok=True)
-    target = folder / f"{handoff_id}_{name}"
-    target.write_text(script, encoding="utf-8")
+    file = ""
+    if not by_hand:
+        folder = ledger.root / "handoffs" / department.lower()
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{handoff_id}_{name}"
+        target.write_text(script, encoding="utf-8")
+        file = target.relative_to(ledger.root).as_posix()
     ledger.append(actor, "handoff.created", id=handoff_id, department=department, tool=tool.strip()[:60], title=title.strip()[:160], changes=what_it_changes.strip()[:800],
-                  file=target.relative_to(ledger.root).as_posix(), steps=steps, report_back=report_back.strip()[:400])
-    return {"id": handoff_id, "file": target.relative_to(ledger.root).as_posix()}
+                  file=file, steps=steps, report_back=report_back.strip()[:400])
+    return {"id": handoff_id, "file": file}
 
 
 def handoffs(ledger: Ledger, department: str | None = None) -> list[dict[str, Any]]:

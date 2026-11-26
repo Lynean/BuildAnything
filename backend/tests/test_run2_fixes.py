@@ -437,3 +437,274 @@ def test_programs_installed_after_the_app_started_are_found(monkeypatch):
     env = conn.clean_environment()
     assert env["PATH"].split(";")[0] == r"C:\Old\bin" and r"C:\NewTool\bin" in env["PATH"].split(";")  # what was set stays first
     assert env["ANDROID_HOME"] == r"C:\Android\Sdk"
+
+
+def test_a_programs_repeated_test_failure_never_becomes_a_hardware_problem(tmp_path):
+    from buildanything import debugging
+
+    led = Ledger(tmp_path / "p")
+    (tmp_path / "p" / "firmware" / "computer").mkdir(parents=True)  # no platformio.ini: a program on a computer
+    (tmp_path / "p" / "firmware" / "board" ).mkdir(parents=True)
+    (tmp_path / "p" / "firmware" / "board" / "platformio.ini").write_text("[env]", encoding="utf-8")
+    for device in ("computer", "board"):
+        for _ in range(8):
+            s = debugging.open_or_repeat(led, "Tests failed", f"AssertionError in {device}", "code", Actor.system("software"), device=device, where=device)
+        assert s["domain"] == ("code" if device == "computer" else "device"), device
+
+
+def test_system_wide_installs_go_through_internal_service(tmp_path):
+    root = tmp_path / "proj"
+    (root / "firmware" / "app").mkdir(parents=True)
+    led = Ledger(root)
+    software.allow_autotest(led, "app", True, Actor.human())
+    for command in (["winget", "install", "Gradle.Gradle"], ["npm", "install", "-g", "typescript"], ["python", "-m", "pip", "install", "--user", "x"]):
+        try:
+            software.run_command(led, root, "app", command, Actor.agent("software"))
+            raise AssertionError(f"{command} was run")
+        except software.SoftwareError as exc:
+            assert "Internal Service" in str(exc)
+    assert software._installs_system_wide(["python", "-m", "pip", "install", "-r", "requirements.txt"]) == ""  # into the project's environment is fine
+
+
+def test_the_record_cache_survives_departments_reading_while_others_write(tmp_path):
+    import threading
+
+    led = Ledger(tmp_path / "p")
+    errors = []
+
+    def writer():
+        for i in range(40):
+            led.propose(Actor.agent("controller"), "requirement", key=f"R{i}", text="t", verification="v")
+
+    def reader():
+        for _ in range(120):
+            try:
+                led.query("requirement")
+            except Exception as exc:  # noqa: BLE001 - any failure is the bug
+                errors.append(repr(exc))
+
+    threads = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(5)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert errors == [] and len(led.query("requirement")) == 40
+
+
+def test_generated_typescript_leaves_byte_order_off_one_byte_fields():
+    from buildanything import codegen
+
+    assert codegen._order("uint8", "true") == "" and codegen._order("int8", "true") == "" and codegen._order("enum8", "true") == ""
+    assert codegen._order("uint16", "true") == ", true"
+
+
+def test_a_reply_that_reports_its_own_failure_counts_as_failed():
+    assert cloud._says_failed(['{"error": "Traceback ...", "success": false}'])
+    assert not cloud._says_failed(['{"message": "0 open document(s)", "success": true}']) and not cloud._says_failed([{"rows": []}])
+
+
+async def test_running_out_of_turns_ends_the_job_unfinished_not_broken(tmp_path, monkeypatch):
+    from buildanything.gateway import TurnLimitReached
+
+    led = Ledger(tmp_path / "p")
+    monkeypatch.setattr(shape, "team", lambda state: ["Software"])
+    monkeypatch.setattr(shape, "on_team", lambda state, d: True)
+
+    class Tired:
+        async def run(self, **kwargs):
+            raise TurnLimitReached("This run stopped after too many steps.")
+
+    monkeypatch.setattr(hq, "_lead_tools", lambda *a, **k: [])
+    monkeypatch.setattr(hq, "_shared_context", lambda *a, **k: {})
+    await hq.run_lead(led, Tired(), "Software", "Write the phone control page.", hq.Services(None))
+    report = [e["data"] for e in led.events() if e["kind"] == "report.filed"][-1]
+    assert report["type"] == "PARTIAL" and report["needs"][0]["owner"] == "Software"
+    assert hq.failure(led.events()) is None
+
+
+def test_a_departments_failed_job_does_not_stop_the_project(tmp_path):
+    led = Ledger(tmp_path / "p")
+    led.append(Actor.system("headquarters"), "hq.failed", step="open:Software", label="x", message="boom", department="Software")
+    assert hq.failure(led.events()) is None  # the other departments carry on
+    led.append(Actor.system("headquarters"), "hq.failed", step="plan", label="x", message="boom")
+    assert hq.failure(led.events())["step"] == "plan"  # Headquarters' own step still waits for the person
+
+
+def test_a_plan_revision_starts_from_the_current_plan_and_keeps_what_was_settled(tmp_path):
+    led = Ledger(tmp_path / "p")
+    led.propose(Actor.agent("controller"), "requirement", key="R3", text="Target an assembled overall length of approximately 200 mm.", verification="Measure it.")
+    old = led.propose(Actor.agent("verifier"), "finding", run=1, severity="medium", safety=False, text="The 20 cm length is missing.", related=[])
+    gates.decide_finding(led, old, "fix", "", Actor.human())
+    duty = led.propose(Actor.agent("verifier"), "finding", run=2, severity="medium", safety=False, text="R8's duty cycle wasn't approved.", related=[])
+    gates.decide_finding(led, duty, "dismiss", "50% driving and 50% stopped matches my use.", Actor.human())
+    new = led.propose(Actor.agent("verifier"), "finding", run=3, severity="medium", safety=True, text="Charging isn't covered.", related=[])
+    text = hq.settled_plan_context(led.state(), led.events(), [led.state().records[new]])
+    assert "R3: Target an assembled overall length of approximately 200 mm." in text and "word for word" in text
+    assert "The 20 cm length is missing." in text  # settled earlier, must stay fixed
+    assert "50% driving and 50% stopped matches my use." in text  # the person's decision is kept
+    assert "Charging isn't covered." not in text  # the problem being fixed now comes separately
+
+
+def test_changes_raised_at_the_same_moment_get_different_numbers(tmp_path):
+    import threading
+    from buildanything import changes
+
+    led = Ledger(tmp_path / "p")
+    ids = []
+    threads = [threading.Thread(target=lambda i=i: ids.append(changes.propose(led, f"Add requirement {i}", "Asked by the owner in the chat.", "add_requirement", "", {"text": f"Requirement {i}"}, Actor.agent("headquarters")))) for i in range(6)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    numbers = sorted(e["data"]["number"] for e in led.events() if e["kind"] == "change.proposed")
+    assert numbers == [1, 2, 3, 4, 5, 6]
+
+
+def test_two_rounds_that_leave_the_stage_unchanged_stop_and_wait_for_the_person(tmp_path):
+    led = Ledger(tmp_path / "p")
+    sys_actor = Actor.system("headquarters")
+    led.append(sys_actor, "hq.drive_mark", gate="G4", department="Electrical", mark="abc")
+    led.append(sys_actor, "job.finished", department="Electrical")
+    assert not hq.stuck_on_stage(led.events(), "G4", "Electrical", "abc")  # one round isn't a pattern
+    led.append(sys_actor, "hq.drive_mark", gate="G4", department="Electrical", mark="abc")
+    led.append(sys_actor, "job.finished", department="Electrical")
+    assert hq.stuck_on_stage(led.events(), "G4", "Electrical", "abc")
+    assert not hq.stuck_on_stage(led.events(), "G4", "Electrical", "changed")  # the stage moved
+    assert not hq.stuck_on_stage(led.events(), "G4", "Electrical", "")  # nothing the stage itself needs
+    led.append(Actor.human(), "dept.message", department="Electrical", role="you", text="The datasheets are uploaded.")
+    assert not hq.stuck_on_stage(led.events(), "G4", "Electrical", "abc")  # the person gave something new
+
+
+def test_reception_guidance_unsticks_the_department_it_was_sent_to(tmp_path):
+    led = Ledger(tmp_path / "p")
+    for _ in range(2):
+        led.append(Actor.system("headquarters"), "hq.drive_mark", gate="G4", department="Mechanical", mark="m")
+    led.append(Actor.agent("external_service"), "service.note", department="Electrical", capability="x", text="y")
+    assert hq.stuck_on_stage(led.events(), "G4", "Mechanical", "m")
+    led.append(Actor.agent("external_service"), "service.note", department="Mechanical", capability="URDF", text="Steps")
+    assert not hq.stuck_on_stage(led.events(), "G4", "Mechanical", "m")
+
+
+def test_reworded_repeat_tool_requests_are_merged_and_closed_ones_can_be_asked_again(tmp_path):
+    from buildanything import services
+
+    app = Ledger(tmp_path / "_app")
+    first = services.ask(app, "car", "Mechanical", "Fusion assembly to URDF export with referenced STL meshes and project-folder output verification", "Export the car for simulation.")
+    assert first.startswith("Asked")
+    again = services.ask(app, "car", "Mechanical", "Established Fusion assembly-to-URDF exporter with STL meshes and joint export, plus output verification", "Export the car to URDF.")
+    assert again.startswith("That's already asked for")
+    other = services.ask(app, "car", "Software", "URDF-to-MuJoCo MJCF conversion and replay export", "Run the car in MuJoCo.")
+    assert other.startswith("Asked")
+    ask_id = next(a["id"] for a in services.asks(app) if a["department"] == "Mechanical")
+    app.append(Actor.human(), "service.ask_closed", id=ask_id)
+    assert services.ask(app, "car", "Mechanical", "Fusion assembly to URDF export with referenced STL meshes and project-folder output verification", "Still needed after all.").startswith("Asked")
+
+
+def test_a_department_fetches_a_public_document_for_a_confirmed_part(tmp_path, monkeypatch):
+    import io
+    from pypdf import PdfWriter
+    from buildanything import datasheets
+
+    led = Ledger(tmp_path / "p")
+    part = led.propose(Actor.agent("electrical"), "component", part_number="DRV8833", role="Motor driver", category="module")
+    led.append(Actor.human(), "record.confirmed", id=part)
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    buf = io.BytesIO()
+    writer.write(buf)
+    monkeypatch.setattr(datasheets, "fetch_pdf", lambda url: buf.getvalue())
+    monkeypatch.setattr(datasheets, "page_texts", lambda path: ["DRV8833 Dual H-Bridge Motor Driver datasheet"])
+    fetch = hq.fetch_document_tool(led, "Electrical")
+    assert "No single confirmed part" in fetch("ESP32", "https://example.com/a.pdf")
+    reply = fetch("DRV8833", "https://www.ti.com/lit/ds/symlink/drv8833.pdf")
+    assert reply.startswith("Saved as the")
+    sheet = led.state().of_type("datasheet")[0]["fields"]
+    assert sheet["component"] == part and sheet["source_url"].endswith("drv8833.pdf") and sheet["part_match"]
+
+
+def test_the_check_stage_asks_electrical_to_fetch_missing_documents_before_the_person():
+    import inspect
+
+    source = inspect.getsource(gatereport._electrical_design)
+    assert source.index('"Electrical", f"Fetch the public documents') < source.index('YOU, f"Upload documents')
+
+
+def test_the_round_limit_starts_again_after_the_person_acts(tmp_path):
+    led = Ledger(tmp_path / "p")
+    for i in range(6):
+        led.append(Actor.system("headquarters"), "hq.finished", step=f"drive:G4:Electrical:{i}", label="x")
+    assert hq._drives_since_person(led.events(), "G4", "Electrical") == 6
+    led.append(Actor.human(), "dept.message", department="Electrical", role="you", text="Fetch the datasheets.")
+    assert hq._drives_since_person(led.events(), "G4", "Electrical") == 0
+
+
+async def test_a_second_name_for_an_existing_board_is_refused(tmp_path, monkeypatch):
+    led = Ledger(tmp_path / "p")
+    board = led.root / "firmware" / "esp32-c6"
+    board.mkdir(parents=True)
+    (board / "platformio.ini").write_text("[env:device]\nplatform = espressif32\nboard = esp32-c6-devkitc-1\nframework = arduino\n")
+    tools = hq._lead_tools(led, None, "Electrical", hq.Services(None), False)
+    write = next(t for t in tools if getattr(t, "__name__", "") == "write_firmware")
+    called = []
+
+    async def fake_generate(*args, **kwargs):
+        called.append(args[3])
+        return {"ok": True}
+
+    monkeypatch.setattr(hq.firmware, "generate", fake_generate)
+    refused = await write("desk-rc-car", "esp32-c6-devkitc-1", "Motor driver")
+    assert "already lives in: esp32-c6" in refused["error"] and not called
+    assert (await write("esp32-c6", "esp32-c6-devkitc-1", "Motor driver"))["ok"]
+    assert (await write("second-board", "esp32-c6-devkitc-1", "A separate board", new_board=True))["ok"]
+    assert called == ["esp32-c6", "second-board"]
+
+
+def test_pausing_stops_new_work_and_says_so(tmp_path):
+    led = Ledger(tmp_path / "p")
+    led.append(Actor.human(), "hq.paused", paused=True)
+    assert hq.paused(led.events()) and hq.next_action(led) is None
+    assert hq.needs(led)[0]["kind"] == "paused"
+    led.append(Actor.human(), "hq.paused", paused=False)
+    assert not hq.paused(led.events())
+
+
+async def test_documents_with_a_pdf_link_are_fetched_once(tmp_path, monkeypatch):
+    from buildanything import datasheets
+
+    led = Ledger(tmp_path / "p")
+    part = led.propose(Actor.agent("electrical"), "component", part_number="DRV8833", role="Driver", category="module", datasheet_url="https://www.ti.com/lit/ds/symlink/drv8833.pdf")
+    led.append(Actor.human(), "record.confirmed", id=part)
+    assert [c["id"] for c in hq.docs_to_fetch(led, led.state())] == [part]
+    monkeypatch.setattr(datasheets, "fetch_pdf", lambda url: (_ for _ in ()).throw(OSError("timed out")))
+    await hq.fetch_docs(led)
+    assert hq.docs_to_fetch(led, led.state()) == []  # a failed link isn't retried forever
+    assert [e["data"]["ok"] for e in led.events() if e["kind"] == "documents.fetch_tried"] == [False]
+
+
+def test_an_empty_message_with_a_success_flag_counts_as_nothing_sent_back():
+    assert cloud._empty(['{\n    "message": "",\n    "success": true\n}'])
+    assert not cloud._empty(['{"message": "{\\"joints\\": 6}", "success": true}'])
+
+
+def test_a_hand_off_can_be_steps_only(tmp_path):
+    from buildanything import skills
+
+    led = Ledger(tmp_path / "p")
+    made = skills.hand_off(led, "Mechanical", "Fusion", "Export the car to URDF", "Writes URDF and mesh files into the project; the design isn't changed.", "", "", ["Open ACDC4Robot", "Choose URDF", "Pick mechanics/cad/urdf"], "The folder's file list", Actor.agent("mechanical"))
+    assert made["file"] == "" and skills.handoffs(led, "Mechanical")[0]["steps"][1] == "Choose URDF"
+
+
+def test_a_part_modelled_in_an_outside_cad_tool_counts_as_modelled(tmp_path, monkeypatch):
+    from buildanything import mechanical as mech
+
+    led = Ledger(tmp_path / "p")
+    monkeypatch.setattr(mech, "current_parts", lambda state: [{"fields": {"number": "M-01"}}])
+    link = hq.link_cad_tool(led)
+    assert "No current part" in link("M-09", "Fusion", "Desk RC Car / M-01", "Inspection shows a 195 x 90 x 3 mm body")
+    assert link("M-01", "Fusion", "Desk RC Car / M-01 Main chassis", "Inspection shows a 195 x 90 x 3 mm body").startswith("Recorded")
+    assert "M-01" in gatereport.modelled_parts(led)
+
+
+def test_a_mutual_need_the_person_already_settled_is_not_asked_again(tmp_path):
+    led = Ledger(tmp_path / "p")
+    led.append(Actor.system("headquarters"), "request.raised", id="req_1", sender="Software", to="Electrical", question="Software and Electrical each need the other for this: wiring. Which department should do it?", why="")
+    led.append(Actor.human(), "request.person_answered", id="req_1", answer="Electrical goes first.")
+    view = hq.requests_view(led.events())
+    earlier = next(r for r in reversed(view) if r["status"] == "answered" and r["question"].startswith("Software and Electrical each need the other"))
+    assert earlier["answer"] == "Electrical goes first."

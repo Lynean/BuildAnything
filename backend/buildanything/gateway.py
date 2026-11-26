@@ -24,6 +24,10 @@ class SpendLimitReached(Exception):
     pass
 
 
+class TurnLimitReached(SpendLimitReached):
+    """An agent used all the turns one job allows. Its work so far is kept; the job ends unfinished, not broken."""
+
+
 class MissingProviderKey(Exception):
     pass
 
@@ -254,7 +258,7 @@ class Gateway:
             result = await Runner.run(sdk_agent, message, max_turns=request_limit, hooks=budget, run_config=config)
             return result.final_output
         except MaxTurnsExceeded as exc:
-            raise SpendLimitReached("This run stopped after too many steps.") from exc
+            raise TurnLimitReached("This run stopped after too many steps.") from exc
         finally:
             running.remove(budget)
             jobs.agent_ended(self.ledger, live)

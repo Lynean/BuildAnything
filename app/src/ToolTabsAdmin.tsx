@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { call, useBusy, useProject } from "./api";
+import { ScreenChip } from "./Linked";
 import ToolTab from "./ToolTab";
 
 // Reception's Tool tabs: tabs the Service agents wrote, waiting for the person; approved ones with the projects that
@@ -35,11 +36,7 @@ export default function ToolTabsAdmin() {
     <section className="card wide tool-tabs-admin">
       <h3>Tool tabs</h3>
       <p className="hint">Tabs the Service agents made for a tool, shown in a department's screen. Each runs sealed off from the app: it can only read this project's files and its own data, never press buttons or reach the internet.</p>
-      <label className="row auto-skills" title="Data scripts run in a sandbox: no network, no other programs except the one you approved for the tab, nothing written into the project.">
-        <input type="checkbox" checked={view.scripts} disabled={!!busy} onChange={(e) => run("Saving", async () => changed(await call<View>("/tabs/scripts", "POST", { allowed: e.target.checked })))} />
-        Let tool tabs run their data scripts on this computer
-        <span className="hint">{view.scripts ? "On: a tab's Collect button runs its script in the sandbox." : "Off: tabs show only project files; data scripts don't run."}</span>
-      </label>
+      <p className="hint">Tab data scripts: {view.scripts ? "allowed (a tab's Collect button runs its script in the sandbox)" : "not allowed (tabs show only project files)"}. Change it in <ScreenChip screen="Settings">Settings</ScreenChip>.</p>
       {error && <p className="error">{error}</p>}
       {waiting.map((t) => (
         <div key={t.id} className="note service-request">

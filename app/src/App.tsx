@@ -15,13 +15,16 @@ import PlatformScreen from "./PlatformScreen";
 import TeamStory from "./TeamStory";
 import World, { placeOf } from "./World";
 import Explorer, { FileView } from "./Explorer";
+import Settings from "./Settings";
+import TerminalPanel from "./TerminalPanel";
 import { watchExpandable } from "./expandable";
 
-const SCREENS = ["Headquarters", "Journey", "Team", "Tests", "Sources", "Mechanical", "Electrical", "Software", "Simulation", "Interface", "Procurement", "External Service", "Internal Service", "Platform", "Agents", "Review queue", "Import project"] as const;
+const SCREENS = ["Headquarters", "Journey", "Team", "Tests", "Sources", "Mechanical", "Electrical", "Software", "Simulation", "Interface", "Procurement", "External Service", "Internal Service", "Platform", "Agents", "Review queue", "Import project", "Settings"] as const;
 // Screens that were merged into others, so old links still land somewhere sensible.
 const MOVED: Record<string, string> = { Changes: "Review queue", Gates: "Journey", Tasks: "Headquarters", "Project Network": "Team", Connectors: "External Service" };
 type Screen = (typeof SCREENS)[number];
 const JOURNEY_LOOK = { label: "Journey", color: "#ffd166", icon: "M3 17h3l3-9 4 12 3-7h5v2h-4l-4 9-4-12-2 5H3z" };
+const SETTINGS_LOOK = { label: "Settings", color: "#9aa7b8", icon: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8.4 4.5.1-1-.1-1 2.1-1.6-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1L16 3.2h-4l-.4 2.7a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L7.5 11l-.1 1 .1 1-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.7h4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5z" };
 const IMPORT_LOOK = { label: "Import a project", color: "#6ab0c8", icon: "M11 3h2v9.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3zM4 18h16v3H4z" };
 
 function screenFromHash(): Screen | null {
@@ -87,6 +90,9 @@ export default function App() {
   const [interfaceSection] = useState<Section>("Data packets");
   const [explorer, setExplorer] = useState(false);
   const [file, setFile] = useState("");
+  const [terminal, setTerminal] = useState(false);
+  const [termRequest, setTermRequest] = useState<{ folder: string; n: number } | null>(null);
+  useEffect(() => { const onTerm = (e: Event) => { setTerminal(true); setTermRequest((r) => ({ folder: (e as CustomEvent<string>).detail ?? "", n: (r?.n ?? 0) + 1 })); }; window.addEventListener("ba:terminal", onTerm); return () => window.removeEventListener("ba:terminal", onTerm); }, []);
   // Any screen can open a project file in the viewer: window.dispatchEvent(new CustomEvent("ba:open-file", { detail: "path/in/project" })).
   useEffect(() => { const onOpen = (e: Event) => { setExplorer(true); setFile((e as CustomEvent<string>).detail); }; window.addEventListener("ba:open-file", onOpen); return () => window.removeEventListener("ba:open-file", onOpen); }, []);
   const [waiting, setWaiting] = useState(0);
@@ -130,16 +136,23 @@ export default function App() {
     Agents: <AgentsScreen />,
     "Review queue": <><Review onOpen={(name) => open(name)} onChange={refresh} /><ChangesScreen /></>,
     "Import project": <ImportLive />,
+    Settings: <Settings projectId={projectId} />,
   };
-  const look = screen === "Journey" ? JOURNEY_LOOK : screen === "Import project" ? IMPORT_LOOK : (() => { const p = screen ? placeOf(screen) : undefined; return p ? { label: p.label, color: p.color, icon: p.icon } : { label: screen ?? "", color: "#54d6c2", icon: "" }; })();
+  const look = screen === "Journey" ? JOURNEY_LOOK : screen === "Import project" ? IMPORT_LOOK : screen === "Settings" ? SETTINGS_LOOK : (() => { const p = screen ? placeOf(screen) : undefined; return p ? { label: p.label, color: p.color, icon: p.icon } : { label: screen ?? "", color: "#54d6c2", icon: "" }; })();
 
   return (
     <div className="app">
       <header className="world-top">
         <button className="brand-btn" onClick={() => open(null)} aria-label="Back to the project map"><span className="brand">Build<span>Anything</span></span></button>
-        <ProjectSwitcher name={projectName} onNew={() => { open("Headquarters"); window.setTimeout(() => window.dispatchEvent(new Event("ba:new-project")), 0); }} />
+        <ProjectSwitcher name={projectName} onNew={() => { (window as unknown as { baNewProject?: boolean }).baNewProject = true; open("Headquarters"); window.setTimeout(() => window.dispatchEvent(new Event("ba:new-project")), 0); }} />
         <button className="import-btn" onClick={() => open("Import project")} aria-label="Import a project"><span>+</span> Import</button>
         <span className="world-hint">{screen ? "Esc or the map button takes you back" : "Click any circle to go inside"}</span>
+        <button className={`files-btn ${terminal ? "on" : ""}`} onClick={() => setTerminal((x) => !x)} aria-pressed={terminal} aria-label="Terminals">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm1 2v12h16V6zm2 2.5L9.5 12 6 15.5l1.4 1.4 4.9-4.9-4.9-4.9zM12 15h6v2h-6z" /></svg> Terminal
+        </button>
+        <button className={`files-btn ${screen === "Settings" ? "on" : ""}`} onClick={() => open(screen === "Settings" ? null : "Settings")} aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8.4 4.5.1-1-.1-1 2.1-1.6-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1L16 3.2h-4l-.4 2.7a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L7.5 11l-.1 1 .1 1-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.7h4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5z" /></svg> Settings
+        </button>
         <button className={`files-btn ${explorer ? "on" : ""}`} onClick={() => setExplorer((x) => !x)} aria-pressed={explorer} aria-label="Project files">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zm2 4v10h14V9z" /></svg> Files
         </button>
@@ -173,6 +186,7 @@ export default function App() {
       </World>
       <div className="section-backdrop" aria-hidden="true" />
       {explorer && <Explorer projectId={projectId} selected={file} onOpenFile={setFile} onClose={() => setExplorer(false)} />}
+      {terminal && <TerminalPanel projectId={projectId} request={termRequest} onClose={() => setTerminal(false)} />}
       </div>
     </div>
   );

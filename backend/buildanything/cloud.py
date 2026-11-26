@@ -180,16 +180,36 @@ def validate(raw: dict[str, Any]) -> Manifest:
 STORES: dict[str, "Store"] = {}
 
 
+def _says_failed(data: Any) -> bool:
+    """A reply that reports its own failure, such as {"success": false, "error": ...}, even when the call itself went through."""
+    items = data if isinstance(data, list) else [data]
+    for item in items:
+        if isinstance(item, str):
+            try:
+                item = json.loads(item)
+            except ValueError:
+                continue
+        if isinstance(item, dict) and (item.get("success") is False or item.get("ok") is False):
+            return True
+    return False
+
+
 def _empty(data: Any) -> bool:
     """Nothing came back: no data, or only blank text."""
     if data is None:
         return True
     if isinstance(data, str):
-        return not data.strip() or data.strip().lower() in ("null", "none", "{}", "[]", "ok", "success")
+        text = data.strip()
+        if text[:1] in ("{", "["):
+            try:
+                return _empty(json.loads(text))
+            except ValueError:
+                pass
+        return not text or text.lower() in ("null", "none", "{}", "[]", "ok", "success")
     if isinstance(data, (list, tuple)):
         return all(_empty(x) for x in data)
-    if isinstance(data, dict):
-        return not data or all(_empty(v) for v in data.values())
+    if isinstance(data, dict):  # status flags such as success: true aren't results
+        return not data or all(_empty(v) or (k.lower() in ("success", "ok", "status") and isinstance(v, (bool, str))) for k, v in data.items())
     return False
 
 
@@ -410,7 +430,7 @@ class Store:
         self.ledger.append(actor, "conn.called", id=conn_id, operation=operation, project=project, ok=ok, status=detail.get("status"), seconds=round(time.time() - started, 2),
                            params={k: str(v)[:80] for k, v in params.items()}, empty=empty)
         if empty:
-            detail = {**detail, "note": "It succeeded but sent nothing back. If you need its results, have it save them to a file in the project folder and read that file."}
+            detail = {**detail, "note": "It succeeded but sent nothing back. If you ran a script, print its results (some programs send back only what a script prints, not what it returns), or have it save them to a file in the project folder and read that file."}
         return detail
 
     def returns_nothing(self, conn_id: str) -> set[str]:
@@ -482,7 +502,8 @@ class Store:
             result = await client.call_tool(op.mcp_tool, template if isinstance(op.body, dict) else params)
         data = result.data if getattr(result, "data", None) is not None else [getattr(c, "text", str(c)) for c in result.content]
         out = self._redact(m, json.dumps(data, default=str))
-        return {"ok": not getattr(result, "is_error", False), "status": "mcp", "data": json.loads(out) if len(out) <= MAX_RESULT else out[:MAX_RESULT], "truncated": len(out) > MAX_RESULT}
+        ok = not getattr(result, "is_error", False) and not _says_failed(data)  # some servers reply normally with success: false inside
+        return {"ok": ok, "status": "mcp", "data": json.loads(out) if len(out) <= MAX_RESULT else out[:MAX_RESULT], "truncated": len(out) > MAX_RESULT}
 
     async def list_mcp_tools(self, target: str) -> list[dict[str, Any]]:
         """Read-only: what an MCP server offers, so External Service can describe its operations."""

@@ -419,6 +419,22 @@ def autotest_allowed(ledger: Ledger, device: str) -> bool:
 RUN_SECONDS = 900  # builds can take minutes, such as a first Gradle build
 
 
+SYSTEM_INSTALLERS = {"winget", "winget.exe", "choco", "choco.exe", "scoop", "msiexec", "msiexec.exe", "apt", "apt-get", "brew", "sudo", "runas"}
+
+
+def _installs_system_wide(command: list[str]) -> str:
+    """A command that would install onto the computer itself, rather than into this project. Those go through Internal Service."""
+    words = [c.lower() for c in command]
+    first = words[0].rsplit("/", 1)[-1]
+    if first in SYSTEM_INSTALLERS:
+        return f"{command[0]} installs programs onto this computer"
+    if first in ("npm", "npm.cmd", "pnpm", "yarn") and any(w in ("-g", "--global") for w in words):
+        return "a global npm install changes this computer, not just the project"
+    if "pip" in words and "install" in words and any(w in ("--user", "--target", "--prefix", "--root") for w in words):
+        return "pip with --user or a custom target installs outside the project's environment"
+    return ""
+
+
 SHELLS = {"cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "bash", "bash.exe", "sh", "zsh", "wsl", "wsl.exe"}
 SKIP_SCAN = {".venv", "__pycache__", "ledger", "node_modules", ".gradle", "build", ".git"}
 
@@ -436,10 +452,13 @@ def run_command(ledger: Ledger, root: Path, device: str, command: list[str], act
     if not fw.is_computer(root, device):
         raise SoftwareError("Only computer programs can be run here; a board is built and flashed from the Device tab.")
     if not autotest_allowed(ledger, device):
-        raise SoftwareError(f"The person hasn't let the app run the {device} program's code. Ask them to tick 'Run code and tests' on its screen.")
+        raise SoftwareError(f"The person hasn't let the app run the {device} program's code. Ask them to allow 'Run code and tests' for it in Settings.")
     if not command or not all(isinstance(a, str) and 0 < len(a) < 500 for a in command) or len(command) > 40:
         raise SoftwareError("command is the program and its arguments as a short list of strings, such as [\"gradlew.bat\", \"assembleDebug\"] or [\"sim.py\", \"--steps\", \"500\"].")
     first, rest = command[0].strip().replace(chr(92), "/"), command[1:]
+    system_wide = _installs_system_wide(command)
+    if system_wide:
+        raise SoftwareError(f"Not run: {system_wide}. Ask Reception with request_tool, and Internal Service will propose it for the person to approve.")
     local = (base / first).resolve()
     python = None
     if (base / "requirements.txt").exists() or first.endswith(".py"):

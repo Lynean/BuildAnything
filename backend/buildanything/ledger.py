@@ -65,7 +65,7 @@ class Actor:
 HUMAN_ONLY = {
     "gate.approved", "record.confirmed", "record.rejected", "limit.changed", "test.result_accepted", "test.result_dismissed",
     "connector.saved", "connector.removed", "connector.approved", "autonomy.changed",
-    "debug.measurement", "check.closed", "budget.set", "release.created", "gate.imported", "finding.decided", "command.person", "compat.accepted", "requirement.clarified", "component.owned", "component.variant", "component.no_datasheet", "component.doc_missing", "assumption.checked", "bench.accepted", "bench.screen", "need.waived", "needs.none", "deviation.closed", "order.arrived", "test.result", "test.dependencies", "change.approved", "change.rejected", "change.reopened", "request.person_answered", "task.done", "software.tests", "software.autotest", "sim.code_allowed", "cad.trials_allowed", "scope.set", "flash.approved", "flash.restored", "concept.approved", "project.updated", "hq.retry", "research.waived", "packet.acked", "packet.removed", "link.answer", "link.routed", "link.closed", "software.step", "cad.kept", "cad.rolled_back", "cad.contact_allowed", "cad.synced", "cad.drawing", "shape.set", "shape.request_declined", "gate.criterion_met", "platform.converter_decided", "service.install_approved", "service.install_rejected", "service.ask_closed", "service.tool_decided", "skill.decided", "handoff.reported", "skills.auto_set", "tab.decided", "tabs.scripts_allowed", "tab.shown", "conn.decided", "conn.key_set", "conn.write_decided", "conn.removed",
+    "debug.measurement", "check.closed", "budget.set", "release.created", "gate.imported", "finding.decided", "command.person", "compat.accepted", "requirement.clarified", "component.owned", "component.variant", "component.no_datasheet", "component.doc_missing", "assumption.checked", "bench.accepted", "bench.screen", "need.waived", "needs.none", "deviation.closed", "order.arrived", "test.result", "test.dependencies", "change.approved", "change.rejected", "change.reopened", "request.person_answered", "task.done", "software.tests", "software.autotest", "sim.code_allowed", "cad.trials_allowed", "scope.set", "flash.approved", "flash.restored", "concept.approved", "project.updated", "hq.retry", "research.waived", "packet.acked", "packet.removed", "link.answer", "link.routed", "link.closed", "software.step", "cad.kept", "cad.rolled_back", "cad.contact_allowed", "cad.synced", "cad.drawing", "shape.set", "shape.request_declined", "gate.criterion_met", "platform.converter_decided", "service.install_approved", "service.install_rejected", "service.ask_closed", "hq.paused", "service.tool_decided", "skill.decided", "handoff.reported", "skills.auto_set", "tab.decided", "tabs.scripts_allowed", "tab.shown", "conn.decided", "conn.key_set", "conn.write_decided", "conn.removed",
 }
 
 # A model may suggest these checks but can never report their results.
@@ -223,38 +223,59 @@ class Ledger:
     # ---- SQLite cache: safe to delete at any time ----
 
     def rebuild_cache(self) -> None:
-        state = self.state()
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cache_path.unlink(missing_ok=True)
-        with sqlite3.connect(self.cache_path) as db:
-            db.execute("create table records (id text primary key, type text, status text, body text)")
-            db.execute("create table info (key text primary key, value text)")
-            db.executemany("insert into records values (?,?,?,?)", [(r["id"], r["type"], r["status"], json.dumps(r, ensure_ascii=False)) for r in state.records.values()])
-            db.execute("insert into info values ('event_count', ?)", (str(state.event_count),))
-        db.close()
+        """Builds the cache in a new file and swaps it in, under a lock, so departments working side by side never see
+        it half-written or deleted while they read it."""
+        import os
+        import uuid as _uuid
+
+        with _lock_for(self.cache_path):
+            state = self.state()
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            fresh = self.cache_path.with_name(f"ledger-{_uuid.uuid4().hex[:8]}.sqlite")
+            db = sqlite3.connect(fresh)
+            try:
+                with db:
+                    db.execute("create table records (id text primary key, type text, status text, body text)")
+                    db.execute("create table info (key text primary key, value text)")
+                    db.executemany("insert into records values (?,?,?,?)", [(r["id"], r["type"], r["status"], json.dumps(r, ensure_ascii=False)) for r in state.records.values()])
+                    db.execute("insert into info values ('event_count', ?)", (str(state.event_count),))
+            finally:
+                db.close()
+            for _attempt in range(20):  # on Windows a reader can hold the old file open for a moment
+                try:
+                    os.replace(fresh, self.cache_path)
+                    break
+                except PermissionError:
+                    import time as _time
+
+                    _time.sleep(0.05)
+            else:
+                fresh.unlink(missing_ok=True)
 
     def query(self, record_type: str, status: str | None = None) -> list[dict[str, Any]]:
         if not self._cache_is_current():
             self.rebuild_cache()
-        db = sqlite3.connect(self.cache_path)
-        try:
-            sql, args = "select body from records where type=?", [record_type]
-            if status:
-                sql, args = sql + " and status=?", args + [status]
-            return [json.loads(row[0]) for row in db.execute(sql, args)]
-        finally:
-            db.close()
+        with _lock_for(self.cache_path):
+            db = sqlite3.connect(self.cache_path)
+            try:
+                sql, args = "select body from records where type=?", [record_type]
+                if status:
+                    sql, args = sql + " and status=?", args + [status]
+                return [json.loads(row[0]) for row in db.execute(sql, args)]
+            finally:
+                db.close()
 
     def _cache_is_current(self) -> bool:
-        if not self.cache_path.exists():
-            return False
-        db = sqlite3.connect(self.cache_path)
-        try:
-            row = db.execute("select value from info where key='event_count'").fetchone()
-        except sqlite3.Error:
-            return False
-        finally:
-            db.close()
+        with _lock_for(self.cache_path):
+            if not self.cache_path.exists():
+                return False
+            db = sqlite3.connect(self.cache_path)
+            try:
+                row = db.execute("select value from info where key='event_count'").fetchone()
+            except sqlite3.Error:
+                return False
+            finally:
+                db.close()
         return row is not None and int(row[0]) == len(self.events())
 
 

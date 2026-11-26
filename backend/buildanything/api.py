@@ -1,7 +1,7 @@
 """Local HTTP API for the app. Run with: uvicorn buildanything.api:app --port 8787"""
 from __future__ import annotations
 
-from . import converters, files, services as reception, shape, skills as skillbook, tabcheck, tabs as tabkit, cloud, tabideas
+from . import converters, files, services as reception, shape, skills as skillbook, tabcheck, tabs as tabkit, cloud, tabideas, terminals
 
 import base64
 
@@ -167,6 +167,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             raise HTTPException(400, str(exc)) from exc
 
     services = hq.Services(paper_index, registry)
+    terminal_box = terminals.Terminals()
     running: dict[str, asyncio.Task] = {}
 
     def kick(project_id: str) -> None:
@@ -240,6 +241,13 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
     def hq_retry(project_id: str) -> dict[str, Any]:
         led = ledger(project_id)
         hq.retry(led, Actor.human())
+        return output(project_id, led)
+
+    @app.post("/api/projects/{project_id}/hq/pause")
+    def hq_pause(project_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """Pause or resume the project: while paused, running jobs finish and nothing new starts."""
+        led = ledger(project_id)
+        led.append(Actor.human(), "hq.paused", paused=bool(body.get("paused", True)))
         return output(project_id, led)
 
     @app.post("/api/projects/{project_id}/hq/waive-research")
@@ -674,6 +682,62 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
     def skills_list() -> list[dict[str, Any]]:
         return skillbook.listing(app_ledger)
 
+    # ---- Settings: every standing permission in one place ----
+
+    @app.get("/api/projects/{project_id}/settings")
+    def project_settings(project_id: str) -> dict[str, Any]:
+        """What the person has allowed, for this project and for the whole app, so one screen can show and change it."""
+        from . import firmware as fw_mod, software as sw_mod
+
+        led = ledger(project_id)
+        state = led.state()
+        programs = [{"device": d, "run_allowed": sw_mod.autotest_allowed(led, d), "kind": "simulation" if d == hq.SIM_DEVICE else "program"}
+                    for d in fw_mod.devices(led.root) if fw_mod.is_computer(led.root, d)]
+        return {"project": {"programs": programs, "simulation_first": designneeds.simulation_first(led), "limit": state.limit_usd, "spent": round(state.spent_usd, 4)},
+                "app": {"tab_scripts": tabkit.scripts_allowed(app_ledger), "auto_skills": skillbook.auto_enabled(app_ledger)}}
+
+    # ---- Terminals inside the app, for the person only ----
+
+    def terminal_call(work: Any) -> Any:
+        try:
+            return work()
+        except terminals.TerminalError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/terminals")
+    def terminals_list(project: str = "") -> list[dict[str, Any]]:
+        return terminal_box.listing(project)
+
+    @app.post("/api/terminals")
+    def terminals_open(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        project = str(body.get("project", ""))
+        root_dir = project_roots().get(project)
+        if root_dir is None:
+            raise HTTPException(404, "Choose a project first.")
+        return terminal_call(lambda: terminal_box.create(project, root_dir, str(body.get("folder", ""))).view())
+
+    @app.get("/api/terminals/{terminal_id}/output")
+    def terminals_output(terminal_id: str, after: int = 0) -> dict[str, Any]:
+        return terminal_call(lambda: terminal_box.get(terminal_id).output(after))
+
+    @app.post("/api/terminals/{terminal_id}/input")
+    def terminals_input(terminal_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        line = str(body.get("line", ""))
+        if len(line) > 4000 or "\n" in line or "\r" in line:
+            raise HTTPException(400, "Send one line at a time.")
+        terminal_call(lambda: terminal_box.get(terminal_id).send(line))
+        return {"ok": True}
+
+    @app.post("/api/terminals/{terminal_id}/stop")
+    def terminals_stop(terminal_id: str) -> dict[str, Any]:
+        terminal_call(lambda: terminal_box.get(terminal_id).stop())
+        return {"ok": True}
+
+    @app.delete("/api/terminals/{terminal_id}")
+    def terminals_close(terminal_id: str) -> dict[str, Any]:
+        terminal_box.close(terminal_id)
+        return {"ok": True}
+
     @app.get("/api/skills/auto")
     def skills_auto_get() -> dict[str, bool]:
         return {"on": skillbook.auto_enabled(app_ledger)}
@@ -1081,7 +1145,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
                 made = skillbook.write(app_ledger, tool_id, [d.strip() for d in departments.split(",")], title, summary, content, sources.split(","), Actor.agent(f"{side}_service"), set(opened))
             except skillbook.SkillError as exc:
                 return {"error": str(exc)}
-            excerpts = "\n\n".join(f"### {u}\n{opened.get(u.strip(), '(never opened)')[:3500]}" for u in sources.split(",") if u.strip())
+            excerpts = "\n\n".join(f"### {u}\n{opened.get(u.strip(), '(never opened)')[:12000]}" for u in sources.split(",") if u.strip())  # enough of each page that steps further down count as supported
             verdict: skillbook.SkillVerdict = await gateway(led).run(agent="skill_reviewer", output_type=skillbook.SkillVerdict, values={"skill": f"Tool: {tool_id}. For: {departments}. Title: {title}\n\n{content}", "sources": excerpts}, request_limit=3)
             skillbook.record_review(app_ledger, made["id"], verdict)
             auto = skillbook.maybe_auto_approve(app_ledger, made["id"])
@@ -1089,6 +1153,27 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             return {"written": made["id"], "for": made["departments"], "app_checks": made["audit"], "reviewer": verdict.model_dump(), "verified": passed,
                     "next": ("Approved automatically, as the person chose, and the departments have it." if auto else "Verified; it's waiting for the person's one-click approval.") if passed
                     else "Not verified: fix every problem listed and write the Skill again."}
+
+        def send_guidance(ask_id: str, guidance: str, sources: str) -> dict[str, Any]:
+            """Answer a department's open request (from open_asks) with plain guidance when no tool or verified Skill covers it,
+            for example when a Skill couldn't be verified: the steps, what must exist first, and what the person does by hand.
+            sources: comma-separated pages you opened. The department gets it, marked unverified, and the request is closed."""
+            asked = next((a for a in reception.asks(app_ledger) if a["id"] == ask_id), None)
+            if not asked:
+                return {"error": "No open request has that id. See open_asks."}
+            if len(guidance.strip()) < 40:
+                return {"error": "Give the department real steps, not a one-liner."}
+            cited = [u.strip() for u in sources.split(",") if u.strip()]
+            unread = [u for u in cited if u not in opened]
+            if not cited or unread:
+                return {"error": "Open each source with open_web_page first, then list it." + (f" Not opened: {', '.join(unread)}" if unread else "")}
+            target = ledger(asked["project"])
+            text = (f"Guidance from {side.title()} Service about your request \"{asked['capability']}\" (not verified as a Skill; check it as you go):\n"
+                    f"{guidance.strip()[:4000]}\nSources: {', '.join(cited)}")
+            target.append(Actor.agent(f"{side}_service"), "service.note", department=asked["department"], capability=asked["capability"], text=text)
+            target.append(Actor.system("reception"), "dept.message", department=asked["department"], role="agent", text=text, **{"from": f"{side.title()} Service"})
+            app_ledger.append(Actor.agent(f"{side}_service"), "service.ask_answered", id=ask_id, department=asked["department"])
+            return {"sent_to": asked["department"], "note": "The department reads it in its next job; the request is closed."}
 
         from agents import WebSearchTool
         from .citations import PageError, fetch_page
@@ -1115,7 +1200,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             """Read-only: the programs and toolchains the person approved, whether each is installed now, and how it's installed."""
             return [t for t in reception.catalog_view(services_context(), True) if t.get("custom")]
 
-        tools = [open_asks, read_example, write_tab_file, read_tab_files, build_tab, propose_tab, dismiss_tab_idea] + ([project_environment, propose_install, check_program, programs, search_winget, propose_tool] if side == "internal" else [WebSearchTool(), open_web_page, write_skill, mcp_server_tools, propose_connection, connections, call_service])
+        tools = [open_asks, read_example, write_tab_file, read_tab_files, build_tab, propose_tab, dismiss_tab_idea] + ([project_environment, propose_install, check_program, programs, search_winget, propose_tool] if side == "internal" else [WebSearchTool(), open_web_page, write_skill, send_guidance, mcp_server_tools, propose_connection, connections, call_service])
         threaded = tools
         earlier = "\n".join(f"{m['role']}: {m['text'][:600]}" for m in service_messages(side)[-10:])
         state = led.state()

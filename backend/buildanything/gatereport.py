@@ -44,7 +44,8 @@ def modelled_parts(ledger: Ledger) -> set[str]:
             latest = d["after"]
         elif event["kind"] == "cad.rolled_back":
             latest = before.get(d.get("id"), latest)
-    return {b["part"] for b in (latest or {}).get("bodies", []) if b.get("part")}
+    linked = {e["data"]["part"] for e in ledger.events() if e["kind"] == "cad.linked"}  # modelled in a CAD tool the person or a connection runs
+    return {b["part"] for b in (latest or {}).get("bodies", []) if b.get("part")} | linked
 
 
 def _electrical_design(ledger: Ledger, state: ProjectState) -> list[Blocker]:
@@ -60,6 +61,7 @@ def _electrical_design(ledger: Ledger, state: ProjectState) -> list[Blocker]:
     exempt = {c["id"] for c in confirmed if c["fields"].get("generic") or c["fields"].get("no_datasheet")}
     lacking = documents.missing(ledger, state)
     if lacking:
+        out.append(("Electrical", f"Fetch the public documents for: {'; '.join(f'{part} ({needed})' for part, needed in lacking)}, with fetch_document from their direct PDF links, preferably the manufacturer's. Say which ones aren't public, so the person uploads those."))
         out.append((YOU, f"Upload documents for: {'; '.join(f'{part} ({needed})' for part, needed in lacking)}. If one doesn't exist, say so on the Electrical screen."))
     read = {e["data"]["component"] for e in ledger.events() if e["kind"] == "datasheet.read"} | {p["fields"]["component"] for p in state.of_type("parameter")}
     number = {c["id"]: c["fields"]["part_number"] for c in confirmed}

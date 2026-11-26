@@ -149,11 +149,7 @@ export default function ServicesScreen({ side }: { side: "external" | "internal"
       )}
 
       {side === "external" && (
-        <label className="row auto-skills" title="External Service still checks every source and an independent reviewer reads every Skill; this only skips your final click when everything passed.">
-          <input type="checkbox" checked={autoSkills} disabled={!!busy} onChange={(e) => run("Saving", async () => setAutoSkills((await call<{ on: boolean }>("/skills/auto", "POST", { on: e.target.checked })).on))} />
-          Approve Skills automatically when they pass verification
-          <span className="hint">{autoSkills ? "On: verified Skills go straight to the department, marked as approved automatically. Anything that fails still waits for you." : "Off: you approve each Skill with one click."}</span>
-        </label>
+        <p className="hint">Approving verified Skills automatically: {autoSkills ? "on" : "off"}. Change it in <ScreenChip screen="Settings">Settings</ScreenChip>.</p>
       )}
       {side === "external" && skills.filter((s) => s.status === "approved" && s.automatic).slice(0, 3).map((s) => (
         <p key={s.id} className="hint">Approved automatically: <b>{s.title}</b> for {s.departments.join(", ")} ({s.tool}).</p>

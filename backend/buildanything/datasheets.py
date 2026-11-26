@@ -192,3 +192,54 @@ async def extract_component(ledger: Ledger, gateway: Gateway, component_id: str,
             created += 1
     ledger.append(Actor.system("datasheet"), "datasheet.read", component=component_id, created=created)
     return {"pages": [p + 1 for p in pages], "created": created, "unverified": unverified, "problem": None}
+
+
+MAX_PDF_BYTES = 40 * 1024 * 1024
+
+
+def save_pdf(ledger: Ledger, component_id: str, data: bytes, filename: str, doc: str, actor: Actor, source_url: str = "", fetched_by: str = "") -> dict[str, Any]:
+    """Files a component's PDF document, whoever brought it: the person uploading it, or a department fetching it from a
+    public link. The same part used several times gets the one document."""
+    import hashlib
+
+    from . import documents
+
+    record = ledger.state().records[component_id]
+    digest = hashlib.sha256(data).hexdigest()[:10]
+    folder = ledger.root / "datasheets"
+    folder.mkdir(exist_ok=True)
+    target = folder / f"{component_id}-{digest}.pdf"
+    target.write_bytes(data)
+    try:
+        texts = page_texts(target)
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        raise ValueError("That PDF couldn't be read.") from exc
+    matches = part_matches(record["fields"]["part_number"], texts)
+    if doc == "datasheet":
+        doc = documents.detect_kind(texts) or doc  # A board's user manual filed as its datasheet is filed as what it says it is.
+    same_part = [c["id"] for c in ledger.state().of_type("component") if c["status"] != "rejected" and c["fields"]["part_number"].lower() == record["fields"]["part_number"].lower()]
+    extra = {**({"source_url": source_url} if source_url else {}), **({"fetched_by": fetched_by} if fetched_by else {})}
+    for target_id in {component_id, *same_part}:
+        ledger.propose(actor, "datasheet", component=target_id, file=target.name, filename=filename[:200], pages=len(texts), part_match=matches, doc=doc, **extra)
+    return {"doc": doc, "pages": len(texts), "part_match": matches, "file": target.name}
+
+
+def fetch_pdf(url: str) -> bytes:
+    """A PDF from a public web address. Addresses on this computer or a private network are refused."""
+    import urllib.request
+
+    from .citations import PageError, _public_host
+
+    if not _public_host(url):
+        raise PageError("Only public web addresses can be opened.")
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; BuildAnything documents)"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        if not _public_host(response.geturl()):
+            raise PageError("That link redirected somewhere private.")
+        data = response.read(MAX_PDF_BYTES + 1)
+    if len(data) > MAX_PDF_BYTES:
+        raise PageError("That PDF is too large.")
+    if not data.startswith(b"%PDF-"):
+        raise PageError("That link isn't a PDF. Find the direct link to the PDF file itself.")
+    return data

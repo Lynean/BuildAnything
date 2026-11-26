@@ -15,6 +15,11 @@ INT_SIZES = {"uint8": 1, "uint16": 2, "uint32": 4, "uint64": 8, "int8": 1, "int1
 FLOAT_SIZES = {"float32": 4, "float64": 8}
 C_TYPES = {"uint8": "uint8_t", "uint16": "uint16_t", "uint32": "uint32_t", "uint64": "uint64_t", "int8": "int8_t", "int16": "int16_t", "int32": "int32_t", "int64": "int64_t", "enum8": "uint8_t", "float32": "float", "float64": "double"}
 STRUCT = {"uint8": "B", "uint16": "H", "uint32": "I", "uint64": "Q", "int8": "b", "int16": "h", "int32": "i", "int64": "q", "enum8": "B", "float32": "f", "float64": "d"}
+def _order(kind: str, little: str) -> str:
+    """The byte-order argument for a DataView call. One-byte reads and writes don't take one, and TypeScript rejects it."""
+    return "" if kind in ("uint8", "int8", "enum8") else f", {little}"
+
+
 VIEW = {"uint8": "Uint8", "uint16": "Uint16", "uint32": "Uint32", "uint64": "BigUint64", "int8": "Int8", "int16": "Int16", "int32": "Int32", "int64": "BigInt64", "enum8": "Uint8", "float32": "Float32", "float64": "Float64"}
 BYTES = re.compile(r"^bytes\[(\d+)\]$")
 STATUS = ["ok", "size", "type", "version", "checksum", "const", "range"]
@@ -661,14 +666,14 @@ def _ts_packet(packet: dict[str, Any]) -> str:
         kind = f["type"]
         count = fixed_bytes(kind)
         if "const" in f:
-            lines.append(f"  view.set{VIEW[kind]}(i, {_ts_number(kind, f['const'])}, {little}); i += {_wire_size(f)};")
+            lines.append(f"  view.set{VIEW[kind]}(i, {_ts_number(kind, f['const'])}{_order(kind, little)}); i += {_wire_size(f)};")
         elif count is not None:
             lines += [f'  if (m.{f["name"]}.length !== {count}) throw new PacketError("size");', f"  out.set(m.{f['name']}, i); i += {count};"]
         elif kind == "var_bytes":
             lines.append(f"  view.setUint16(i, m.{f['name']}.length, {little}); i += 2;")
             lines.append(f"  out.set(m.{f['name']}, i); i += m.{f['name']}.length;")
         else:
-            lines.append(f"  view.set{VIEW[kind]}(i, m.{f['name']}, {little}); i += {_wire_size(f)};")
+            lines.append(f"  view.set{VIEW[kind]}(i, m.{f['name']}{_order(kind, little)}); i += {_wire_size(f)};")
     if packet.get("checksum"):
         lines.append(f"  view.setUint16(i, crc16(out.subarray(0, i)), {little});")
     lines += ["  return out;", "}", ""]
@@ -686,7 +691,7 @@ def _ts_packet(packet: dict[str, Any]) -> str:
         kind, at = f["type"], f["offset"]
         count = fixed_bytes(kind)
         if "const" in f:
-            lines.append(f'  if (view.get{VIEW[kind]}({at}, {little}) !== {_ts_number(kind, f["const"])}) throw new PacketError("const");')
+            lines.append(f'  if (view.get{VIEW[kind]}({at}{_order(kind, little)}) !== {_ts_number(kind, f["const"])}) throw new PacketError("const");')
         elif count is not None:
             lines.append(f"  const {f['name']} = data.slice({at}, {at + count});")
             names.append(f["name"])
@@ -694,7 +699,7 @@ def _ts_packet(packet: dict[str, Any]) -> str:
             lines.append(f"  const {f['name']} = data.slice({at + 2}, {at + 2} + varLength);")
             names.append(f["name"])
         else:
-            lines.append(f"  const {f['name']} = view.get{VIEW[kind]}({at}, {little});")
+            lines.append(f"  const {f['name']} = view.get{VIEW[kind]}({at}{_order(kind, little)});")
             lines += _ts_checks(f, f["name"])
             names.append(f["name"])
     lines += ["  return { " + ", ".join(names) + " };", "}"]

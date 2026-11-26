@@ -3,6 +3,7 @@ import DepartmentChat from "./DepartmentChat";
 import DepartmentCapabilities from "./DepartmentCapabilities";
 import ToolTab, { useToolTabs } from "./ToolTab";
 import SoftwareOverview from "./SoftwareOverview";
+import { ScreenChip } from "./Linked";
 import FlashPanel from "./FlashPanel";
 
 type Lang = "c" | "python" | "ts";
@@ -104,6 +105,10 @@ export default function Workspace({ onOpenTroubleshooting, department = "Softwar
   const [elec, setElec] = useState<Elec | null>(null);
   const [side, setSide] = useState<string>("Agent");
   const toolTabs = useToolTabs(projectId, department);
+  // Hooks stay above the early returns below, so they run in the same order on every render.
+  const [failed, setFailed] = useState<{ summary: string; lines: string[] } | null>(null);
+  const [hasElectrical, setHasElectrical] = useState(false);
+  useEffect(() => { if (projectId) call<{ team: string[] }>(`/projects/${projectId}/shape`).then((r) => setHasElectrical(r.team.includes("Electrical"))).catch(() => setHasElectrical(false)); }, [projectId]);
   // Software's sections are sized by dragging their edges (or the arrow keys on an edge). Sizes are remembered on this computer.
   const stored = (key: string, fallback: number) => { try { return Number(localStorage.getItem(key)) || fallback; } catch { return fallback; } };
   const [sideW, setSideW] = useState(() => stored("ba.sideW", 290));
@@ -183,7 +188,8 @@ export default function Workspace({ onOpenTroubleshooting, department = "Softwar
   const allBlocks = list.flatMap((f) => f.blocks);
   const okCount = allBlocks.filter((b) => b.state === "documented").length;
   const sessions = (elec?.debug ?? []).filter((s) => s.device === device && s.status === "open" && s.domain === "code");
-  const moved = (elec?.debug ?? []).filter((s) => s.device === device && s.status === "open" && s.domain !== "code");
+  // Problems moved to Electrical's Troubleshooting: only for a board, and only when Electrical is on the team.
+  const moved = (elec?.debug ?? []).filter((s) => s.device === device && s.status === "open" && s.domain !== "code" && !computers.includes(device));
   const active = sessions[0];
   const hypothesis = active?.hypotheses[active.hypotheses.length - 1];
   const notes = elec?.pageNotes ?? [];
@@ -200,12 +206,17 @@ export default function Workspace({ onOpenTroubleshooting, department = "Softwar
     if (device) setSetup(await call<Setup>(`${base}/firmware/${device}/setup`));
   };
   const isComputer = computers.includes(device);
+  const sendFailures = () => failed && run("Sending", async () => {
+    const message = `I ran the tests for ${device}: ${failed.summary}\n\n${failed.lines.slice(-25).join("\n")}\n\nPlease fix what fails.`;
+    await call(`/projects/${projectId}/departments/${department}`, "POST", { message });
+    setFailed(null); setNote(`Sent the failures to ${department}. Its answer is in the chat.`); setSide("Agent");
+  });
   const runTests = () => {
     if (!window.confirm("Run this program's tests on your computer? The code was written by an agent, so check it first. The first run installs its requirements.txt into this project's Python environment.")) return;
     run("Running the tests", async () => {
       const r = await call<{ result: { ok: boolean; summary: string; lines: string[] }; view: Elec }>(`${base}/firmware/${device}/tests`, "POST", { confirmed: true });
       setElec(r.view);
-      if (r.result.ok) setNote(r.result.summary); else { setError(`Tests failed. ${r.result.summary} ${r.result.lines.slice(-2).join(" ")}`); setSide("Debug"); }
+      if (r.result.ok) { setNote(r.result.summary); setFailed(null); } else { setError(`Tests failed. ${r.result.summary} ${r.result.lines.slice(-2).join(" ")}`); setFailed({ summary: r.result.summary, lines: r.result.lines }); }
     });
   };
   const toggleAutotest = () => {
@@ -295,7 +306,9 @@ export default function Workspace({ onOpenTroubleshooting, department = "Softwar
                       </>}
                   <button className="small" disabled={!!busy} onClick={build}>{isComputer ? "Check code" : "Build"}</button>
                   {isComputer && <button className="small" disabled={!!busy} onClick={runTests}>Run tests</button>}
-                  {isComputer && <label className="small" title="The agent's code and tests run on your computer without asking each time, in this project's Python environment with its requirements.txt installed"><input type="checkbox" checked={!!setup?.autotest} disabled={!!busy} onChange={toggleAutotest} /> Run code and tests (installs its requirements)</label>}
+                  {isComputer && failed && <button className="small primary" disabled={!!busy} onClick={sendFailures} title="Gives the failing tests to the department, so it fixes them">Send failures to {department}</button>}
+                  {isComputer && <span className="small hint">Running code: {setup?.autotest ? "allowed" : "not allowed"} · <ScreenChip screen="Settings">Settings</ScreenChip></span>}
+                  {isComputer && <button className="small" onClick={() => window.dispatchEvent(new CustomEvent("ba:terminal", { detail: `firmware/${device}` }))} title="Opens a terminal in this program's folder, with the project's Python">Open in terminal</button>}
                 </div>
               </div>
               {file.blocks.length === 0
@@ -346,7 +359,7 @@ export default function Workspace({ onOpenTroubleshooting, department = "Softwar
           {side === "Debug" && (
             <div className="side-body">
               {(setup?.linkIssues.length ?? 0) > 0 && <div className="link-notice"><div className="eyebrow">Link issue</div>{setup?.linkIssues.map((l) => <p key={l.id}>{l.title} ({l.between.join(" and ")}). See the Interface screen.</p>)}</div>}
-              {moved.length > 0 && <div className="link-notice"><div className="eyebrow">Moved to Troubleshooting</div><p>{moved[0].title}</p><button className="small" onClick={onOpenTroubleshooting}>Open Troubleshooting</button></div>}
+              {moved.length > 0 && hasElectrical && <div className="link-notice"><div className="eyebrow">Moved to Troubleshooting</div><p>{moved[0].title}</p><button className="small" onClick={onOpenTroubleshooting}>Open Troubleshooting</button></div>}
               {active ? (
                 <>
                   <div className="eyebrow">Code problem</div>

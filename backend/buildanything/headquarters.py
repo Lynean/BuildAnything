@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from . import shape, jobs, ci, devicefacts, documents, datasheets, designneeds, protocol, agents as hq_agents, changes, compat, depgraph, traceability, connectors as conn, firmware, gates, interfaces, mechanical, page_memory, procurement, software
 from .citations import PaperIndex
-from .gateway import Gateway
+from .gateway import Gateway, TurnLimitReached
 from .ledger import Actor, Ledger, ProjectState
 
 DEPARTMENTS = tuple(shape.DEPARTMENT_TYPES)  # every kind of department the app can run; a project's own team is shape.team(state)
@@ -68,7 +68,7 @@ def failure(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     for event in reversed(events):
         if event["kind"] == "hq.retry":
             return None
-        if event["kind"] == "hq.failed":
+        if event["kind"] == "hq.failed" and not event["data"].get("department"):  # a department's own job failing doesn't stop the others
             return event["data"]
     return None
 
@@ -79,6 +79,29 @@ def plan_version(events: list[dict[str, Any]]) -> int:
 
 def _addressed(events: list[dict[str, Any]]) -> set[str]:
     return {f for e in events if e["kind"] == "plan.written" for f in e["data"].get("addresses", [])}
+
+
+def settled_plan_context(state: ProjectState, events: list[dict[str, Any]], fixing: list[dict[str, Any]]) -> str:
+    """For a revision: the plan as it stands, and what earlier reviews and the person already settled, so a rewrite
+    changes only what the new problems need and doesn't undo earlier fixes."""
+    current = [r for r in state.of_type("requirement") if r["status"] in ("proposed", "confirmed")]
+    tasks = [t for t in state.of_type("task") if t["status"] in ("proposed", "confirmed")]
+    fixing_ids = {f["id"] for f in fixing}
+    done = _addressed(events)
+    settled = [f for f in state.of_type("finding") if f["id"] not in fixing_ids and (f["id"] in done or (f.get("decision") or {}).get("decision") in ("fix", "fixed"))]
+    decided = [f for f in state.of_type("finding") if (f.get("decision") or {}).get("decision") in ("dismiss", "accept")]  # "later" means no work now, so it isn't shown
+    out = []
+    if current or tasks:
+        out.append("Start from the current plan below. Keep every requirement and task exactly as it is, word for word with the same key, unless one of the problems listed after it requires changing it; add only what those problems need.")
+        out += [f"- {r['fields'].get('key')}: {r['fields'].get('text')} (Tested by: {r['fields'].get('verification', '')})" for r in current]
+        out += [f"- Task {t['fields'].get('key')} ({t['fields'].get('department')}): {t['fields'].get('title')}" for t in tasks]
+    if settled:
+        out.append("These problems were fixed in earlier revisions. The plan must still satisfy every one of them:")
+        out += [f"- {f['fields']['text'][:400]}" for f in settled]
+    if decided:
+        out.append("The person decided these; respect each decision exactly:")
+        out += [f"- {f['fields']['text'][:300]} Decision: {f['decision']['decision']}. Their reason: {f['decision'].get('reason', '')}" for f in decided]
+    return ("\n".join(out) + "\n\n") if out else ""
 
 
 def fixes_to_apply(state: ProjectState, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -124,7 +147,7 @@ def own_remaining(events: list[dict[str, Any]], department: str) -> list[str]:
     return [n["what"] for n in report.get("needs", []) if n.get("owner") == department]
 
 
-def _owned_work(ledger: Ledger, state: ProjectState, gate: str) -> dict[str, list[str]]:
+def _owned_work(ledger: Ledger, state: ProjectState, gate: str, own: bool = True) -> dict[str, list[str]]:
     from . import gatereport
 
     out: dict[str, list[str]] = {}
@@ -143,7 +166,7 @@ def _owned_work(ledger: Ledger, state: ProjectState, gate: str) -> dict[str, lis
             if owner:
                 out.setdefault(owner, []).append(f"Make this work and show how you checked it, so the person can confirm it: {criterion['text']}")
     events = ledger.events()
-    for department in [] if planning else team:
+    for department in [] if planning or not own else team:
         for what in own_remaining(events, department):
             if what not in out.get(department, []):
                 out.setdefault(department, []).append(what)
@@ -154,6 +177,38 @@ def _stalled(events: list[dict[str, Any]], department: str) -> bool:
     """Two rounds of work in a row that finished nothing: a person hears about it instead of paying for a third."""
     work = [e["data"] for e in events if e["kind"] == "report.filed" and e["data"]["department"] == department and e["data"]["command"] in ("TASK", "RECHECK")][-2:]
     return len(work) == 2 and all(not r.get("done") for r in work)
+
+
+def _stage_mark(ledger: Ledger, state: ProjectState, gate: str, department: str) -> str:
+    """What the stage itself still needs from a department, without the department's own to-do list (which it rewords
+    every round). If two rounds of work leave this unchanged, more rounds won't change it either."""
+    items = sorted(_owned_work(ledger, state, gate, own=False).get(department, []))
+    return hashlib.sha256(json.dumps(items).encode()).hexdigest()[:10] if items else ""
+
+
+def stuck_on_stage(events: list[dict[str, Any]], gate: str, department: str, mark: str) -> bool:
+    """Two rounds in a row that left the stage's needs exactly as they were, with nothing new from the person since."""
+    if not mark:
+        return False
+    marks = [(i, e["data"]["mark"]) for i, e in enumerate(events) if e["kind"] == "hq.drive_mark" and e["data"]["gate"] == gate and e["data"]["department"] == department]
+    if len(marks) < 2 or marks[-1][1] != mark or marks[-2][1] != mark:
+        return False
+    last = marks[-1][0]
+    if any(e["kind"] == "job.started" and e["data"].get("department") == department for e in events[last:]) and not any(e["kind"] == "job.finished" and e["data"].get("department") == department for e in events[last:]):
+        return False  # the second round is still running
+    return not any(e["actor"].get("kind") == "human" or (e["kind"] == "service.note" and e["data"]["department"] == department) for e in events[last + 1:])  # anything the person or Reception gave since is a new fact
+
+
+def _drives_since_person(events: list[dict[str, Any]], gate: str, department: str) -> int:
+    """Rounds given to a department for this stage since the person last did anything (or Reception sent it guidance):
+    what the person gives is new, so the limit starts again from there."""
+    count = 0
+    for e in reversed(events):
+        if e["actor"].get("kind") == "human" or (e["kind"] == "service.note" and e["data"].get("department") == department):
+            break
+        if e["kind"] == "hq.finished" and e["data"].get("step", "").startswith(f"drive:{gate}:{department}:"):
+            count += 1
+    return count
 
 
 def _drive(ledger: Ledger, state: ProjectState, done: set[str], busy: set[str] | None = None) -> str | None:
@@ -170,10 +225,14 @@ def _drive(ledger: Ledger, state: ProjectState, done: set[str], busy: set[str] |
             continue
         if protocol.is_held(events, department) or protocol.bug_open(events, department) or department in waiting_on_person or _stalled(events, department):
             continue
-        # The same list twice means the agent already tried, so a person hears about it instead of paying again.
-        token = hashlib.sha256(json.dumps(items).encode()).hexdigest()[:10]
+        if stuck_on_stage(events, gate, department, _stage_mark(ledger, state, gate, department)):
+            continue  # shown to the person in Needs you instead of paying for more rounds
+        # The same list twice means the agent already tried, so a person hears about it instead of paying again. A permission
+        # the person granted since (such as letting the app run the program's code) is a new fact, so the work is tried again.
+        granted = sum(1 for e in events if e["kind"] == "software.autotest" and e["data"].get("allowed"))
+        token = hashlib.sha256(json.dumps([items, granted]).encode()).hexdigest()[:10]
         action = f"drive:{gate}:{department}:{token}"
-        if action not in done and sum(1 for step in done if step.startswith(f"drive:{gate}:{department}:")) < MAX_DRIVES:
+        if action not in done and _drives_since_person(events, gate, department) < MAX_DRIVES:
             return action
     return None
 
@@ -189,12 +248,44 @@ def _answers_to_deliver(events: list[dict[str, Any]], done: set[str]) -> dict[st
     return out
 
 
+def docs_to_fetch(ledger: Ledger, state: ProjectState) -> list[dict[str, Any]]:
+    """Confirmed parts still waiting on a document whose proposal gave a direct PDF link the app hasn't tried yet."""
+    from . import documents
+
+    tried = {(e["data"]["component"], e["data"]["url"]) for e in ledger.events() if e["kind"] == "documents.fetch_tried"}
+    have = {cid for (cid, _kind) in documents.latest_docs(state)}
+    return [c for c in state.of_type("component", "confirmed") if c["fields"].get("datasheet_url", "").startswith("http")
+            and c["id"] not in have and (c["id"], c["fields"]["datasheet_url"]) not in tried and documents.status(ledger, state, c)["missing"]]
+
+
+async def fetch_docs(ledger: Ledger) -> None:
+    """Saves the documents of confirmed parts from the PDF links given when they were proposed, so nobody has to upload them."""
+    from . import citations, datasheets
+
+    for part in docs_to_fetch(ledger, ledger.state()):
+        url = part["fields"]["datasheet_url"]
+        try:
+            data = await asyncio.to_thread(datasheets.fetch_pdf, url)
+            saved = datasheets.save_pdf(ledger, part["id"], data, url.rsplit("/", 1)[-1][:120] or "datasheet.pdf", "datasheet", Actor.system("documents"), source_url=url, fetched_by="Headquarters")
+            ledger.append(SYSTEM, "documents.fetch_tried", component=part["id"], url=url, ok=True, matches=bool(saved["part_match"]))
+        except (citations.PageError, OSError, ValueError) as exc:
+            ledger.append(SYSTEM, "documents.fetch_tried", component=part["id"], url=url, ok=False, message=str(exc)[:200])
+
+
+def paused(events: list[dict[str, Any]]) -> bool:
+    """The person paused the project: jobs already running finish, nothing new starts until they resume it."""
+    for e in reversed(events):
+        if e["kind"] == "hq.paused":
+            return bool(e["data"].get("paused"))
+    return False
+
+
 def next_action(ledger: Ledger, running: set[str] | None = None, busy: set[str] | None = None) -> str | None:
     """The next step Headquarters should take. Steps in running are already under way; departments in busy are working,
     so they get nothing new until they finish, while other departments can be started."""
     running, busy = running or set(), busy or set()
     state, events = ledger.state(), ledger.events()
-    if failure(events):
+    if failure(events) or paused(events):
         return None
     waiting = changes.waiting_review(ledger)
     if waiting and f"review_change:{waiting[0]}" not in running:
@@ -257,6 +348,8 @@ def next_action(ledger: Ledger, running: set[str] | None = None, busy: set[str] 
             return step
     if AUTO_CI and gates.current_gate(state) and ci.pending(ledger) and "ci" not in running:
         return "ci"
+    if docs_to_fetch(ledger, state) and "fetch_docs" not in running:
+        return "fetch_docs"
     work = _drive(ledger, state, opened, busy)
     if work:
         return work
@@ -285,6 +378,8 @@ def needs(ledger: Ledger) -> list[dict[str, Any]]:
 def _needs(ledger: Ledger) -> list[dict[str, Any]]:
     state, events = ledger.state(), ledger.events()
     out: list[dict[str, Any]] = []
+    if paused(events):
+        out.append({"kind": "paused", "text": "Paused: departments finish what they're doing and start nothing new. Resume when you're ready."})
     broken = failure(events)
     if broken:
         out.append({"kind": "no_sources" if broken["step"] == "research" else "failed", "text": f"Research stopped: {broken['message']}" if broken["step"] == "research" else f"{broken['label']} stopped: {broken['message']}"})
@@ -341,6 +436,11 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
         report = protocol.latest(events, department)
         if protocol.bug_open(events, department) and not designneeds.declared_none(ledger, department):
             out.append({"kind": "bug", "text": f"{department} found a tool problem: {(report['risk'] or report['for_person'])[:200]}", "goto": department})
+    gate = gates.current_gate(state)
+    if gate and not next_action(ledger):
+        for department, items in _owned_work(ledger, state, gate, own=False).items():
+            if stuck_on_stage(events, gate, department, _stage_mark(ledger, state, gate, department)):
+                out.append({"kind": "stuck", "goto": department, "text": f"{department} has tried twice and the {gates.stage(gate, state)} stage hasn't moved, so it has stopped to save money. Still needed: {'; '.join(i[:120] for i in items[:3])}. Tell {department} what to do, or provide what it's missing, and it tries again."})
     questions = [r for r in requests_view(events) if r["status"] == "waiting_for_you"]
     if questions:
         more = f" And {len(questions) - 1} more in the Review queue." if len(questions) > 1 else ""
@@ -349,9 +449,9 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
     for device in firmware.devices(ledger.root):
         if device not in decided and firmware.is_computer(ledger.root, device) and any(not f.get("generated") for f in firmware.scan_workspace(ledger.root, device)):
             if device == SIM_DEVICE:
-                out.append({"kind": "autotest", "device": device, "text": "Let the app run the simulation's code? Then Simulation runs its simulations itself and saves the results, instead of you running them. It installs the simulation's requirements.txt into this project's Python environment. Tick 'Run code and tests' on the Simulation screen.", "goto": "Simulation"})
+                out.append({"kind": "autotest", "device": device, "text": "Let the app run the simulation's code? Then Simulation runs its simulations itself and saves the results, instead of you running them. It installs the simulation's requirements.txt into this project's Python environment. Allow 'Run code and tests' for it in Settings.", "goto": "Settings"})
             else:
-                out.append({"kind": "autotest", "device": device, "text": f"Let the app run the {device} program's code, builds and tests? Then Software builds and tests after each write and fixes what fails, instead of you running them. Python packages go into this project's environment; build tools run as they are on this computer. Tick 'Run code and tests' on the Software screen.", "goto": "Software"})
+                out.append({"kind": "autotest", "device": device, "text": f"Let the app run the {device} program's code, builds and tests? Then Software builds and tests after each write and fixes what fails, instead of you running them. Python packages go into this project's environment; build tools run as they are on this computer. Allow 'Run code and tests' for it in Settings.", "goto": "Settings"})
             break
     app_root = ledger.root.parent / "_app"
     if app_root.is_dir() and concept_approved(ledger):
@@ -489,6 +589,10 @@ def department_tool(ledger: Ledger, gateway: Gateway, sender: str, services: Ser
         looping = _loop(ledger.events(), sender, department, question) if sender in DEPARTMENTS else None
         owner = _plan_owner(ledger, question) if looping else None
         if looping and not owner:  # nobody's job by the plan: the person decides, in one plain question
+            earlier = next((r for r in reversed(requests_view(ledger.events())) if r["status"] == "answered" and r.get("answer")
+                            and (r["question"].startswith(f"{sender} and {department} each need the other") or r["question"].startswith(f"{department} and {sender} each need the other"))), None)
+            if earlier:
+                return f"Headquarters: the person already decided who does this between you and {department}: \"{earlier['answer'][:400]}\". Follow that; don't ask again."
             question = f"{sender} and {department} each need the other for this: {deliverable.strip()}. Which department should do it?"
         ledger.append(SYSTEM, "request.raised", id=request_id, sender=sender, to=department, question=question, why=why)
         events = ledger.events()
@@ -626,7 +730,7 @@ def _department_state(ledger: Ledger, department: str, services: Services) -> di
                 others[d] = text
     simulation = designneeds.simulation_first(ledger)
     scope = {"simulation_first": f"The person wants the software and simulation first ({simulation}). No parts, wiring, firmware or buying until they switch hardware on: don't propose or ask for any."} if simulation else {}
-    return {**_own_state(ledger, department, services), **scope, "project_files": project_files(ledger.root), "other_departments_latest": others,
+    return {**_own_state(ledger, department, services), **scope, "project_files": project_files(ledger.root), "project_folder_on_this_computer": f"{ledger.root.resolve()} (programs on this computer, such as a CAD script, save results here with this full path; they don't start in it)", "other_departments_latest": others,
             "deliverables": "Every department's reports and files can be read with list_deliverables, read_deliverable and read_department_reports. Look there before asking for something."}
 
 
@@ -662,15 +766,18 @@ def _service_tool(ledger: Ledger, department: str) -> Any:
     from . import cloud
 
     async def use_service(connection: str, operation: str, params_json: str = "{}", why: str = "") -> dict[str, Any]:
-        """Use a connected outside service listed in services: run one of its operations by name with params as a JSON object. Reading runs straight away; an operation that changes something waits for the person's approval, so say why."""
+        """Use a connected outside service listed in services: run one of its operations by name with params as a JSON object. Reading runs straight away; an operation that changes something waits for the person's approval, so say why. When you only need to look, use an operation that reads: running a read-only script through an operation that changes something still waits for the person every time."""
         store = cloud.store_for(ledger.root.parent / "_app")
         if store is None:
             return {"error": "No services are connected."}
         try:
             params = json.loads(params_json or "{}")
             m = store.approved(connection)
-            if not m or department not in m.departments:
-                return {"error": f"{connection} isn't connected for {department}. Ask External Service, through the person, to connect it."}
+            if not m:
+                mine = [c["connection"] for c in store.for_department(department)]
+                return {"error": f"There's no outside service called {connection}. use_service is only for services listed in services ({', '.join(mine) or 'none for you yet'}). Your own project's records and files are read with look_up_project, list_deliverables and read_deliverable, which are always available."}
+            if department not in m.departments:
+                return {"error": f"{m.name} isn't connected for {department}. Ask External Service, through the person, to add {department} to it."}
             op = next((o for o in m.operations if o.name == operation), None)
             if op and op.writes:
                 if not why.strip():
@@ -780,14 +887,20 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
 
         firmware_writes = {"count": 0}
 
-        async def write_firmware(device: str, board: str, goal: str) -> dict[str, Any]:
-            """Write a board's DRIVER and MIDDLEWARE layers. device is lowercase with hyphens, board is the PlatformIO board ID. Software writes the app on top of your middleware headers. Include everything in one goal, because this can only run twice per reply."""
+        async def write_firmware(device: str, board: str, goal: str, new_board: bool = False) -> dict[str, Any]:
+            """Write a board's DRIVER and MIDDLEWARE layers. device is lowercase with hyphens, board is the PlatformIO board ID. Software writes the app on top of your middleware headers. Include everything in one goal, because this can only run twice per reply.
+            To change a board that already has code, use its existing device name. new_board is only for a second, physically separate board."""
             firmware_writes["count"] += 1
             if firmware_writes["count"] > 2:
                 return {"error": "That's twice in this reply, and each rewrite costs money. Report what's left."}
             name = device.strip().lower()
             if not re.fullmatch(r"[a-z0-9-]{1,40}", name) or not board.strip():
                 return {"error": "Give a device name in lowercase letters, numbers and hyphens, and the PlatformIO board ID."}
+            boards = {d: firmware.device_config(root, d) for d in firmware.devices(root) if not firmware.is_computer(root, d)}
+            if name not in boards and boards and not new_board:  # a second name for the same board splits its code in two folders
+                listed = "; ".join(f"{d} (board {c['board'] if c else '?'})" for d, c in boards.items())
+                firmware_writes["count"] -= 1  # nothing was written
+                return {"error": f"This project's board code already lives in: {listed}. To change it, use that device name. Only if this is a second, physically separate board, call again with new_board true."}
             return await firmware.generate(ledger, gateway, root, name, board.strip(), goal, scope="lower")
 
         async def read_facts(part_number: str) -> dict[str, Any]:
@@ -1008,11 +1121,20 @@ def _shared_context(ledger: Ledger, department: str, services: Services) -> dict
     app_folder = ledger.root.parent / "_app"
     return {"briefing": hq_agents.build_briefing(state, department), "department_state": _department_state(ledger, department, services), "requests": involved, "earlier_discussion": history,
             "skills": skillbook.context(Ledger(app_folder), department) if app_folder.is_dir() else "None yet.",
-            "services": _services_for(ledger, department)}
+            "services": _services_for(ledger, department),
+            "guidance_from_reception": "\n\n".join(e["data"]["text"] for e in events if e["kind"] == "service.note" and e["data"]["department"] == department)[-6000:] or "None."}
 
 
 def _first_tool(department: str, message: str, tools: list[Any]) -> str | None:
     return "change_cad" if department == "Mechanical" and "no CAD model" in message and any(getattr(t, "__name__", "") == "change_cad" for t in tools) else None
+
+
+def _out_of_turns(department: str) -> protocol.Report:
+    """What a department reports when it used every turn of a job: unfinished, with its saved work kept, to continue next round."""
+    return protocol.Report(type="PARTIAL", done=[], not_checked=["This job ended before the agent finished; check what it saved."], provisional=[],
+                           needs=[protocol.Need(owner=department, what="Continue the unfinished work from this job, starting from what's already saved.")],
+                           can_give_now=[], risk="", severity="none", safety=False,
+                           for_person="I ran out of steps for this job before finishing. What I saved is kept, and I'll continue in the next round.", details="")
 
 
 async def run_lead(ledger: Ledger, gateway: Gateway, department: str, message: str, services: Services, nested: bool = False, attachments: Sequence[Any] = (), sent: dict[str, Any] | None = None, internal: bool = False) -> str:
@@ -1023,11 +1145,18 @@ async def run_lead(ledger: Ledger, gateway: Gateway, department: str, message: s
             tools.append(department_tool(ledger, gateway, department, services))
         tools.append(request_department_tool(ledger, department))
         tools.append(request_tool_tool(ledger, department))
+        if any(c["status"] == "confirmed" for c in ledger.state().of_type("component")):
+            tools.append(fetch_document_tool(ledger, department))
+        if department == "Mechanical":
+            tools.append(link_cad_tool(ledger))
         tools.append(hand_off_tool(ledger, department))
         sent = sent or protocol.command("BRIEF" if not message else "QUESTION" if nested else "TASK", [message] if message else [], "You've answered or finished what was asked.")
         ledger.append(SYSTEM, "command.sent", department=department, **sent)
         tier, turns = ROUTINE.get(sent["type"], (None, LEAD_TURNS)) if not attachments else (None, LEAD_TURNS)
-        reply: Any = await gateway.run(agent=LEADS[department], tools=tools, request_limit=turns, tier=tier, attachments=attachments, output_type=protocol.Report, first_tool=_first_tool(department, message, tools), values={**_shared_context(ledger, department, services), "message": message, "command": sent})
+        try:
+            reply: Any = await gateway.run(agent=LEADS[department], tools=tools, request_limit=turns, tier=tier, attachments=attachments, output_type=protocol.Report, first_tool=_first_tool(department, message, tools), values={**_shared_context(ledger, department, services), "message": message, "command": sent})
+        except TurnLimitReached:
+            reply = _out_of_turns(department)
         report = protocol.shorten(protocol.from_reply(reply))
         job.outcome = report.type
         _say(ledger, department, "agent", report.for_person, details=report.details, internal=internal)
@@ -1047,7 +1176,10 @@ async def run_clones(ledger: Ledger, gateway: Gateway, department: str, groups: 
         ledger.append(SYSTEM, "command.sent", department=department, **sent)
         async with jobs.slot(ledger, department, items[0], set().union(*(jobs.touches(ledger, department, i) for i in items)), items, clone=index + 1) as job:
             tools = _lead_tools(ledger, gateway, department, services)
-            reply: Any = await gateway.run(agent=LEADS[department], tools=tools, request_limit=LEAD_TURNS, output_type=protocol.Report, first_tool=_first_tool(department, text, tools), values={**shared, "message": text, "command": sent})
+            try:
+                reply: Any = await gateway.run(agent=LEADS[department], tools=tools, request_limit=LEAD_TURNS, output_type=protocol.Report, first_tool=_first_tool(department, text, tools), values={**shared, "message": text, "command": sent})
+            except TurnLimitReached:
+                reply = _out_of_turns(department)
             report = protocol.from_reply(reply)
             job.outcome = report.type
             return report, sent
@@ -1099,7 +1231,8 @@ async def talk_to_concept(ledger: Ledger, gateway: Gateway, message: str, servic
 
 def hand_off_tool(ledger: Ledger, sender: str) -> Callable[..., Any]:
     def hand_to_person(tool: str, title: str, what_it_changes: str, filename: str, script: str, steps: str, report_back: str) -> dict[str, Any]:
-        """Hand the person a script or file to run in a tool they operate themselves, such as Altium, following your Skill for it.
+        """Hand the person a script or file to run in a tool they operate themselves, such as Altium, following your Skill for it,
+        or steps to do by hand, such as clicking through an add-in's export dialog (then leave filename and script empty).
         what_it_changes: in plain words, what running it will change in their design. filename: a plain name such as export_bom.pas.
         steps: the steps to run it, separated by ' | '. report_back: what to send back, such as the Messages panel text or the exported netlist.
         It appears as a card on your department's screen; when the person reports back, you're told."""
@@ -1113,11 +1246,62 @@ def hand_off_tool(ledger: Ledger, sender: str) -> Callable[..., Any]:
     return hand_to_person
 
 
+def link_cad_tool(ledger: Ledger) -> Callable[..., str]:
+    def link_cad_model(part_number: str, tool: str, reference: str, evidence: str) -> str:
+        """Record that a part's CAD model lives in an outside CAD tool rather than the app's own model, such as a body in
+        the person's Fusion, SolidWorks or Onshape design. reference: where it is (document and component name, or an
+        exported file in the project). evidence: what you checked that shows the model is there, such as an inspection
+        result giving its body and size. Only for a model you've actually seen."""
+        from . import mechanical as mech
+
+        numbers = {p["fields"]["number"] for p in mech.current_parts(ledger.state())}
+        if part_number.strip() not in numbers:
+            return "No current part has that number. Use one of: " + ", ".join(sorted(numbers))[:600]
+        if len(reference.strip()) < 6 or len(evidence.strip()) < 20:
+            return "Say where the model is and what you checked that shows it's there."
+        ledger.append(Actor.agent("mechanical"), "cad.linked", part=part_number.strip(), tool=tool.strip()[:60], reference=reference.strip()[:300], evidence=evidence.strip()[:600])
+        return f"Recorded: {part_number.strip()} is modelled in {tool.strip()} ({reference.strip()[:120]})."
+
+    return link_cad_model
+
+
+def fetch_document_tool(ledger: Ledger, sender: str) -> Callable[..., str]:
+    def fetch_document(part_number: str, url: str, kind: str = "datasheet") -> str:
+        """Save a confirmed part's document from its public PDF link, as the person would by uploading it, so a stage
+        waiting on documents doesn't wait for them. Find the direct PDF link with web search first, preferably from the
+        manufacturer. kind is the kind of document (see the reply if it's wrong). If the PDF never names
+        the part, you're told, so you can check it and fetch the right one."""
+        from . import citations, datasheets, documents
+
+        if kind not in documents.DOC_KINDS:
+            return "Unknown kind. Use one of: " + ", ".join(documents.DOC_KINDS)
+        wanted = part_number.strip().lower()
+        parts = [c for c in ledger.state().of_type("component", "confirmed") if c["fields"]["part_number"].strip().lower() == wanted]
+        if not parts:
+            parts = [c for c in ledger.state().of_type("component", "confirmed") if wanted and wanted in c["fields"]["part_number"].lower()]
+        if len(parts) != 1 and len({c["fields"]["part_number"] for c in parts}) != 1:
+            return "No single confirmed part matches that. Use the part number exactly as listed: " + "; ".join(c["fields"]["part_number"] for c in ledger.state().of_type("component", "confirmed"))[:600]
+        try:
+            data = datasheets.fetch_pdf(url.strip())
+        except (citations.PageError, OSError) as exc:
+            return f"Couldn't fetch it: {exc}"
+        try:
+            saved = datasheets.save_pdf(ledger, parts[0]["id"], data, url.strip().rsplit("/", 1)[-1][:120] or "document.pdf", kind, Actor.system("documents"), source_url=url.strip(), fetched_by=sender)  # the app downloaded and read the real file
+        except ValueError as exc:
+            return str(exc)
+        if not saved["part_match"]:
+            return f"Saved, but the PDF never names {parts[0]['fields']['part_number']}, so it may be the wrong document; check it and fetch the right one if so."
+        return f"Saved as the {documents.DOC_KINDS.get(saved['doc'], saved['doc'])} for {parts[0]['fields']['part_number']} ({saved['pages']} pages)."
+
+    return fetch_document
+
+
 def request_tool_tool(ledger: Ledger, sender: str) -> Callable[..., str]:
     def request_tool(capability: str, why: str) -> str:
         """Ask Reception for a tool this project doesn't have, such as structural analysis, a parts-pricing API or a circuit simulator.
         capability is what you need done, in a few words; why is what you'll use it for. The person sees it at Reception, where External
-        and Internal Service help set it up. Until then, carry on with what you have and say what the missing tool would settle."""
+        and Internal Service help set it up. Until then, carry on with what you have and say what the missing tool would settle.
+        A measurement on real hardware, buying something, or anything a person does by hand isn't a tool: put it in your report's needs instead."""
         from . import services as reception
 
         answer = reception.ask(Ledger(ledger.root.parent / "_app"), ledger.root.name, sender, capability, why)
@@ -1207,7 +1391,7 @@ async def run_step(ledger: Ledger, gateway: Gateway, action: str, services: Serv
         fixes = fixes_to_apply(state, events)
         gaps = [f for f in fixes if f["fields"].get("kind") != "beyond_scope"]
         extra = [f for f in fixes if f["fields"].get("kind") == "beyond_scope"]
-        feedback = ("Revise the plan to fix these problems found in review:\n" + "\n".join(f"- {f['fields']['text']}" for f in gaps) + "\n" if gaps else "") \
+        feedback = settled_plan_context(state, events, fixes) + ("Revise the plan to fix these problems found in review:\n" + "\n".join(f"- {f['fields']['text']}" for f in gaps) + "\n" if gaps else "") \
             + ("The person asked to remove these, because they go beyond what they asked for. Remove each one, or narrow it to exactly what they asked, and don't add anything in its place:\n" + "\n".join(f"- {f['fields']['text']}" for f in extra) if extra else "")
         result = await hq_agents.run_plan(ledger, gateway, feedback=feedback.strip(), addresses=[f["id"] for f in fixes])
         if result["problems"]:
@@ -1257,10 +1441,13 @@ async def run_step(ledger: Ledger, gateway: Gateway, action: str, services: Serv
         text = f"Please check your work again. {data['reason']}".strip()
         _say(ledger, data["department"], "request", text, "You")
         await run_lead(ledger, gateway, data["department"], text, services, sent=protocol.command("RECHECK", problems, "Every item passes the automatic checks.", data["reason"]))
+    elif action == "fetch_docs":
+        await fetch_docs(ledger)
     elif action.startswith("drive:"):
         _, gate, department, _token = action.split(":")
         items = _owned_work(ledger, state, gate).get(department, [])
         if items:
+            ledger.append(SYSTEM, "hq.drive_mark", gate=gate, department=department, mark=_stage_mark(ledger, state, gate, department))
             tried = any(step.startswith(f"drive:{gate}:{department}:") for step in {e["data"]["step"] for e in events if e["kind"] == "hq.finished"})
             heading = f"The {gates.stage(gate, state)} stage still needs this from {department}:"
             text = heading + "\n" + "\n".join(f"- {i}" for i in items)
@@ -1301,6 +1488,8 @@ def label_for(action: str) -> str:
         return f"{action.split(':')[3]} is making the files a tool tab shows"
     if action.startswith("deliver:"):
         return "Passing on your answer"
+    if action == "fetch_docs":
+        return "Saving parts' documents from their datasheet links"
     if action == "ci":
         return "Running the automatic checks"
     if action.startswith("gate_review:"):
@@ -1361,7 +1550,10 @@ async def advance(ledger: Ledger, gateway: Gateway, services: Services, guard: C
         try:
             task.result()
         except Exception as exc:  # noqa: BLE001 - one department's failure is recorded; the others carry on
-            ledger.append(SYSTEM, "hq.failed", step=action, label=label_for(action), message=str(getattr(exc, "detail", "") or exc)[:300] or type(exc).__name__)
+            message = str(getattr(exc, "detail", "") or exc)[:300] or type(exc).__name__
+            ledger.append(SYSTEM, "hq.failed", step=action, label=label_for(action), message=message, department=_department)
+            if _department:
+                _say(ledger, _department, "agent", f"This job stopped with an error: {message}. The other departments carry on; Headquarters will give me the work again when something changes, or you can ask me here.")
             return False
         ledger.append(SYSTEM, "hq.finished", step=action, label=label_for(action))
         return True

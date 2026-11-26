@@ -16,7 +16,7 @@ function HandoffCard({ projectId, h, onDone }: { projectId: string; h: Handoff; 
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { call<{ text?: string }>(`/projects/${projectId}/files/content?path=${encodeURIComponent(h.file)}`).then((f) => setScript(f.text ?? "")).catch(() => undefined); }, [h.file]);
+  useEffect(() => { if (h.file) call<{ text?: string }>(`/projects/${projectId}/files/content?path=${encodeURIComponent(h.file)}`).then((f) => setScript(f.text ?? "")).catch(() => undefined); }, [h.file]);
   const send = async (ran: boolean) => {
     setBusy(true); setError("");
     try { await call(`/projects/${projectId}/handoffs/${h.id}/report`, "POST", { ran, output }); onDone(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
@@ -24,11 +24,11 @@ function HandoffCard({ projectId, h, onDone }: { projectId: string; h: Handoff; 
   const download = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([script], { type: "text/plain" })); a.download = h.file.split("/").pop()!.replace(/^ho_[a-f0-9]+_/, ""); a.click(); };
   return (
     <div className={`handoff ${h.status}`}>
-      <div className="tool-head"><b>Run in {h.tool}: {h.title}</b><em className={`pill ${h.status === "done" ? "good" : h.status === "waiting" ? "warn" : "bad"}`}>{{ waiting: "Waiting for you", done: "Done", couldnt: "Couldn't run" }[h.status]}</em></div>
+      <div className="tool-head"><b>{h.file ? "Run in" : "Do in"} {h.tool}: {h.title}</b><em className={`pill ${h.status === "done" ? "good" : h.status === "waiting" ? "warn" : "bad"}`}>{{ waiting: "Waiting for you", done: "Done", couldnt: "Couldn't run" }[h.status]}</em></div>
       <p><b>What it changes:</b> {h.changes}</p>
       <ol className="tool-steps">{h.steps.map((s) => <li key={s}>{s}</li>)}</ol>
-      <div className="row"><button className="small" onClick={() => navigator.clipboard?.writeText(script)}>Copy script</button><button className="small" onClick={download}>Download {h.file.split("/").pop()!.replace(/^ho_[a-f0-9]+_/, "")}</button><span className="hint">Open it from {h.tool}; don't double-click it. Also in the file explorer at {h.file}.</span></div>
-      <details><summary>The script</summary><pre className="file-text">{script}</pre></details>
+      {h.file && <><div className="row"><button className="small" onClick={() => navigator.clipboard?.writeText(script)}>Copy script</button><button className="small" onClick={download}>Download {h.file.split("/").pop()!.replace(/^ho_[a-f0-9]+_/, "")}</button><span className="hint">Open it from {h.tool}; don't double-click it. Also in the file explorer at {h.file}.</span></div>
+      <details><summary>The script</summary><pre className="file-text">{script}</pre></details></>}
       {h.status === "waiting" ? (
         <>
           <label className="field">Then send back: {h.report_back}<textarea rows={4} value={output} onChange={(e) => setOutput(e.target.value)} placeholder={`Paste what ${h.tool} showed`} /></label>
