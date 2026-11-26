@@ -260,6 +260,19 @@ def register(app: FastAPI, root: Path, get_ledger: Callable[[str], Ledger], get_
         traceability.record_result(led, test_id, value, _text(body, "outcome"), _text(body, "evidence"), Actor.human())
         return traceability.view(led)
 
+    @app.post("/api/projects/{project_id}/tests/proposals/{proposal_id}/accept")
+    def tests_accept_proposal(project_id: str, proposal_id: str) -> dict[str, Any]:
+        """Only a person records results: accepting a department's proposed result records it as theirs, with its files."""
+        led = get_ledger(project_id)
+        traceability.accept_proposal(led, proposal_id, Actor.human())
+        return traceability.view(led)
+
+    @app.post("/api/projects/{project_id}/tests/proposals/{proposal_id}/dismiss")
+    def tests_dismiss_proposal(project_id: str, proposal_id: str, body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        led = get_ledger(project_id)
+        traceability.dismiss_proposal(led, proposal_id, _text(body, "reason"), Actor.human())
+        return traceability.view(led)
+
     # ---- Project-wide views ----
 
     @app.get("/api/projects/{project_id}/overview")

@@ -49,6 +49,7 @@ class SoftwareOut(BaseModel):
     dependencies: list[DependencyOut]
     setup_steps: list[StepOut]
     not_done: str = Field(default="", description="Anything the goal asked for that you didn't do, such as a file you were asked to change and left alone, and why. Empty if you did all of it")
+    build_command: list[str] = Field(default_factory=list, description="How to build or check this program from its own folder, as the program and its arguments, such as [\"gradlew.bat\", \"assembleDebug\"], [\"npm\", \"run\", \"build\"] or [\"dotnet\", \"build\"]. Include any code-generation step it needs. Empty for a plain Python program, which the app imports and tests by itself. Once set, it's kept until you change it")
 
 
 def search_open_source(query: str) -> dict[str, Any]:
@@ -65,7 +66,7 @@ def path_problems(files: list[fw.FileOut]) -> list[str]:
     problems = []
     for file in files:
         if not fw.HOST_PATH.match(file.path) or ".." in file.path:
-            problems.append(f"{file.path} isn't allowed. Only return Python, TypeScript or JavaScript source files.")
+            problems.append(f"{file.path} isn't allowed. Programs may have text files in any language, but not binaries (images, archives, compiled files), secrets (.env, keys) or build output folders.")
         if file.path.replace("\\", "/").startswith("generated/"):
             problems.append(f"{file.path} is generated from the packet definitions, so it can't be written directly.")
     return problems
@@ -320,6 +321,8 @@ def run_tests(ledger: Ledger, root: Path, device: str, confirmed: bool, actor: A
         raise SoftwareError("Confirm you want this code to run on this computer.")
     if not fw.is_computer(root, device):
         raise SoftwareError("Tests can only run for computer programs.")
+    if not list(base.glob("*.py")):
+        return {"ok": False, "lines": ["This program isn't written in Python, so its tests run through its own build tool with its build command."], "summary": "Not a Python program."}
     automatic = actor.kind == "system" and autotest_allowed(ledger, device)  # only once a person allowed it; anyone else needs a person
     ledger.append(actor, "software.tests_auto" if automatic else "software.tests", device=device)
     python, problem = device_python(root, device, install=True)
@@ -413,6 +416,91 @@ def autotest_allowed(ledger: Ledger, device: str) -> bool:
     return allowed
 
 
+RUN_SECONDS = 900  # builds can take minutes, such as a first Gradle build
+
+
+SHELLS = {"cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "bash", "bash.exe", "sh", "zsh", "wsl", "wsl.exe"}
+SKIP_SCAN = {".venv", "__pycache__", "ledger", "node_modules", ".gradle", "build", ".git"}
+
+
+def _snapshot(root: Path) -> dict[Path, float]:
+    return {p: p.stat().st_mtime for p in root.rglob("*") if p.is_file() and not (SKIP_SCAN & set(p.relative_to(root).parts))}
+
+
+def run_command(ledger: Ledger, root: Path, device: str, command: list[str], actor: Actor, timeout: int = RUN_SECONDS) -> dict[str, Any]:
+    """Runs a command for one program, from its folder: one of its own Python scripts (in the project's environment), a
+    script in its folder (such as gradlew.bat or build.ps1), or a build tool on this computer (such as npm, dotnet or
+    cargo). For building, generating code, running and testing, in any language. Allowed only once a person let the app
+    run this program's code. No window, a time limit, and the output and the files it made come back."""
+    base = (root / "firmware" / device).resolve()
+    if not fw.is_computer(root, device):
+        raise SoftwareError("Only computer programs can be run here; a board is built and flashed from the Device tab.")
+    if not autotest_allowed(ledger, device):
+        raise SoftwareError(f"The person hasn't let the app run the {device} program's code. Ask them to tick 'Run code and tests' on its screen.")
+    if not command or not all(isinstance(a, str) and 0 < len(a) < 500 for a in command) or len(command) > 40:
+        raise SoftwareError("command is the program and its arguments as a short list of strings, such as [\"gradlew.bat\", \"assembleDebug\"] or [\"sim.py\", \"--steps\", \"500\"].")
+    first, rest = command[0].strip().replace(chr(92), "/"), command[1:]
+    local = (base / first).resolve()
+    python = None
+    if (base / "requirements.txt").exists() or first.endswith(".py"):
+        python, problem = device_python(root, device, install=True)
+        if problem:
+            return {"ok": False, "output": problem}
+    if first.endswith(".py"):
+        if not local.is_file() or base not in local.parents:
+            raise SoftwareError(f"{first} isn't one of this program's files in firmware/{device}/.")
+        argv = [python or sys.executable, str(local), *rest]
+    elif local.is_file() and base in local.parents:
+        if local.suffix.lower() not in (".ps1", ".sh", ".bat", ".cmd", ".exe", ""):
+            raise SoftwareError(f"{first} isn't a script or program. Run a .py, .bat, .cmd, .ps1 or .sh script, a built program, or a build tool.")
+        if local.suffix.lower() == ".ps1":
+            argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(local), *rest]
+        elif local.suffix.lower() == ".sh" or not local.suffix:
+            bash = conn.which("bash")
+            if not bash:
+                raise SoftwareError(f"{first} is a shell script, and there's no bash on this computer. Use the Windows script instead if there is one (such as gradlew.bat).")
+            argv = [bash, str(local), *rest]
+        else:
+            argv = [str(local), *rest]
+    else:
+        if first.lower() in SHELLS or "/" in first:
+            raise SoftwareError("Run a build tool or one of the program's own scripts directly, not a shell. Put several steps in a script in the program's folder.")
+        found = conn.which(first)
+        if not found:
+            return {"ok": False, "missing_program": first, "output": f"{first} isn't installed on this computer, or isn't on its PATH. Ask Reception with request_tool to have it set up (say exactly which program and version the build needs), and carry on with what you can."}
+        argv = [found, *rest]
+    before = _snapshot(root)
+    fresh = conn.clean_environment()  # includes programs installed since the app started
+    path = fresh.get("PATH", "")
+    if python:
+        path = str(Path(python).parent) + os.pathsep + path
+    env = {**fresh, "PATH": path, "PYTHONPATH": str(base), "MPLBACKEND": "Agg", "PYTHONIOENCODING": "utf-8", "BUILDANYTHING_HEADLESS": "1", "CI": "1"}
+    try:
+        done = subprocess.run(argv, cwd=base, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+        ok, output = done.returncode == 0, (done.stdout + ("\n" + done.stderr if done.stderr.strip() else "")).strip()
+    except subprocess.TimeoutExpired:
+        ok, output = False, f"It ran for over {timeout} s and was stopped. Programs run here must finish by themselves: no windows, no waiting for input, no endless loops."
+    except OSError as exc:
+        ok, output = False, f"It couldn't start: {exc}"
+    made = sorted(p.relative_to(root).as_posix() for p, t in _snapshot(root).items() if before.get(p) != t)
+    ledger.append(actor, "software.ran", device=device, script=first, args=rest, ok=ok, made=made[:50])
+    return {"ok": ok, "files_made_or_changed": made[:50], "output": output[-4000:]}
+
+
+def run_program(ledger: Ledger, root: Path, device: str, script: str, args: list[str], actor: Actor, timeout: int = RUN_SECONDS) -> dict[str, Any]:
+    """One of the program's own scripts with its arguments (kept for callers that think in scripts)."""
+    return run_command(ledger, root, device, [script, *args], actor, timeout)
+
+
+def build_command(ledger: Ledger, device: str) -> list[str]:
+    """The command the code writer last declared for building or checking this program, if any."""
+    found: list[str] = []
+    for e in ledger.events():
+        if e["kind"] == "software.build_command" and e["data"].get("device") == device:
+            found = list(e["data"].get("command") or [])
+    return found
+
+
 def allow_autotest(ledger: Ledger, device: str, allowed: bool, actor: Actor) -> None:
     if not fw.is_computer(ledger.root, device):
         raise SoftwareError("Automatic test runs are only for computer programs.")
@@ -464,8 +552,8 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
     itf.regenerate(root, state)
     attempts, feedback = 0, ""
     last: list[str] = []
-    asked_to_connect = tested = False
-    test_summary = ""
+    asked_to_connect = tested = built = False
+    test_summary = build_summary = ""
     read_tools = [search_open_source, fw.code_reader(root, device), deliverables.tools(ledger)[1]]
     for attempt in range(3):
         attempts += 1
@@ -507,7 +595,17 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
             asked_to_connect = True
             feedback = "These files were written, but the program people start doesn't use them yet. Edit the running program so it does (mark the blocks you keep as unchanged):\n" + "\n".join(loose)
             continue
-        if autotest_allowed(ledger, device) and not tested and attempt < 2:
+        if output.build_command and output.build_command != build_command(ledger, device):
+            ledger.append(Actor.system("software"), "software.build_command", device=device, command=output.build_command)
+        declared = build_command(ledger, device)
+        if declared and autotest_allowed(ledger, device) and not built and attempt < 2:
+            built = True
+            ran = await asyncio.to_thread(run_command, ledger, root, device, declared, Actor.system("software"))
+            build_summary = "passed" if ran.get("ok") else ran.get("output", "")[-300:]
+            if not ran.get("ok") and not ran.get("missing_program"):
+                feedback = f"The build command {' '.join(declared)} failed after this write. Fix the code (or the build files) with edits:\n" + ran.get("output", "")[-3000:]
+                continue
+        if autotest_allowed(ledger, device) and not tested and attempt < 2 and list((root / "firmware" / device).glob("*.py")):
             tested = True
             run = await asyncio.to_thread(run_tests, ledger, root, device, True, Actor.system("software"))
             test_summary = run["summary"]
@@ -526,6 +624,9 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
             out["not_done"] = output.not_done.strip()[:900]
         if loose or output.not_done.strip():
             out["unfinished"] = "The program people start doesn't do all of the goal yet. Resolve what not_done and not_connected say before reporting DONE."
+        if build_command(ledger, device):
+            out["build_command"] = " ".join(build_command(ledger, device))
+            out["build"] = f"Ran after writing: {build_summary}" if built else ("Not run: the person hasn't allowed running this program's code yet." if not autotest_allowed(ledger, device) else "Allowed, but not run on this attempt.")
         if tested or autotest_allowed(ledger, device):
             out["tests"] = f"Ran after writing: {test_summary}" if tested else "Allowed, but not run on this attempt."
         else:

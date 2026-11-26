@@ -20,7 +20,7 @@ function NoProject({ title, message }: { title: string; message: string }) {
 }
 
 interface Task { id: string; key: string; title: string; department: string; start: number; weeks: number; state: string; done: boolean; }
-const DEPARTMENTS = ["Mechanical", "Electrical", "Software", "Procurement"];
+const DEPARTMENTS = ["Mechanical", "Electrical", "Software", "Procurement", "Simulation"];
 
 export function Tasks() {
   const { projects, projectId, setProjectId, loadError } = useProject();

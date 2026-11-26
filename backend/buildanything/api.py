@@ -1,7 +1,7 @@
 """Local HTTP API for the app. Run with: uvicorn buildanything.api:app --port 8787"""
 from __future__ import annotations
 
-from . import converters, files, services as reception, shape, skills as skillbook, tabcheck, tabs as tabkit, cloud
+from . import converters, files, services as reception, shape, skills as skillbook, tabcheck, tabs as tabkit, cloud, tabideas
 
 import base64
 
@@ -190,6 +190,11 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
         # The status check counts too, so work left waiting by a server restart picks up again.
         if match and (request.method == "POST" or request.url.path.endswith("/hq")) and response.status_code < 400 and (root / match.group(1)).exists():
             kick(match.group(1))
+        approved_tab = re.fullmatch(r"/api/tabs/([A-Za-z0-9_-]{1,80})/decide", request.url.path)
+        if approved_tab and request.method == "POST" and response.status_code < 400:  # a tab shown on projects may need files from their departments
+            for project_id in tabkit.shown_projects(app_ledger, approved_tab.group(1)):
+                if (root / project_id).exists():
+                    kick(project_id)
         return response
 
     @app.get("/api/projects/{project_id}/hq")
@@ -915,6 +920,12 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
     def services_messages(side: str) -> list[dict[str, Any]]:
         return service_messages(side)
 
+    @app.post("/api/projects/{project_id}/tab-ideas/dismiss")
+    def tab_idea_dismiss(project_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        ledger(project_id)
+        tabideas.dismiss(app_ledger, project_id, str(body.get("key", "")), Actor.human())
+        return {"ok": True}
+
     @app.post("/api/services/{side}/chat")
     async def services_chat(side: str, body: dict[str, Any] = Body(...)) -> list[dict[str, Any]]:
         """Talk to External or Internal Service. AI spend goes to the open project."""
@@ -999,13 +1010,21 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
                 report["data_script"] = {k: v for k, v in ran.items() if k != "output"} | ({"output_sample": json.dumps(ran["output"], default=str)[:3000]} if ran.get("ok") else {})
             if report["compile"]["ok"]:
                 report["render"] = tabcheck.render(app_ledger.root, tab_id, led.root)
+            meta = tabkit._manifest(app_ledger.root, tab_id)
+            if meta.get("reads"):
+                report["reads_now"] = tabkit.reads_status(led.root, meta["reads"])
             report["clean"] = not report["rules"] and report["compile"]["ok"] and report.get("render", {}).get("ok", False) and report.get("data_script", {}).get("ok", True) is not False
             return report
 
-        def propose_tab(tab_id: str, tool: str, department: str, title: str, summary: str, exe: str, why: str) -> dict[str, Any]:
-            """Propose a built tab for the person to approve. department: Mechanical, Electrical, Software or Procurement. title: its name in the tab row (2-24 characters). exe: the one program its data script runs with tool.run, such as kicad-cli or matlab, or empty."""
+        def propose_tab(tab_id: str, tool: str, department: str, title: str, summary: str, exe: str, why: str, reads_json: str = "[]") -> dict[str, Any]:
+            """Propose a built tab for the person to approve. department: Mechanical, Electrical, Software or Procurement. title: its name in the tab row (2-24 characters). exe: the one program its data script runs with tool.run, such as kicad-cli or matlab, or empty.
+            reads_json declares every project file the tab reads, as a JSON list of {"path": a glob relative to the project such as "mechanics/sim/runs/*.json", "what": what it is, "made_by": the department that makes it, or "Person"}. Once the tab is shown on a project, each department that makes missing files is told to make them at exactly those paths."""
             try:
-                meta = tabkit.propose(app_ledger.root, app_ledger, tab_id, tool, department, title, summary, exe, why, Actor.agent(f"{side}_service"))
+                reads = json.loads(reads_json or "[]")
+            except ValueError:
+                return {"error": "reads_json must be a JSON list."}
+            try:
+                meta = tabkit.propose(app_ledger.root, app_ledger, tab_id, tool, department, title, summary, exe, why, Actor.agent(f"{side}_service"), reads=reads)
             except tabkit.TabError as exc:
                 return {"error": str(exc)}
             return {"proposed": meta["title"], "department": meta["department"], "program": meta["exe"] or "none", "note": "It waits at Reception, under Tool tabs, for the person to approve it and choose which projects show it."}
@@ -1019,7 +1038,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             return reception.asks(app_ledger)
 
         def propose_install(tool_id: str, why: str, packages: str = "") -> dict[str, Any]:
-            """Propose installing packages into the open project's own Python environment: tool_id 'project-python' and packages as a comma-separated list. The person approves it first."""
+            """Propose an install for the person to approve: tool_id 'project-python' with packages as a comma-separated list for the open project's Python environment, or the id of a program or toolchain the person approved (see programs) to install it the way it was defined."""
             try:
                 made = installs.propose(tool_id, led.root, [p for p in packages.split(",") if p.strip()] or None, why, Actor.agent(f"{side}_service"))
             except reception.ServiceError as exc:
@@ -1033,10 +1052,18 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
         def propose_tool(tool_id: str, group: str, name: str, what: str, check_kind: str, check_value: str, get_kind: str, get_value: str, why: str, capabilities: str = "") -> dict[str, Any]:
             """Propose adding a tool the app doesn't list yet, for the person to approve. tool_id: short lowercase id such as roblox-studio. group: cloud, app or platform.
             check_kind/check_value: exe + a program name on PATH, file + a path starting with %LOCALAPPDATA%, %PROGRAMFILES% or similar (* allowed), key (for an API key; check_value empty), or python + a module name.
-            get_kind/get_value: winget + an exact id from search_winget, pip + a package, key + the https page where the key is made, or steps + instructions separated by ' | '.
-            capabilities: comma-separated, such as game.studio, game.publish."""
+            get_kind/get_value: winget + an exact id from search_winget; command + a JSON list running an installer that's already on this computer, such as ["sdkmanager", "platform-tools", "platforms;android-34"]; pip + a package; key + the https page where the key is made; or steps + instructions for the person separated by ' | '.
+            capabilities: comma-separated, such as android.build, game.studio."""
+            value: Any = get_value
+            if get_kind == "steps":
+                value = [x.strip() for x in get_value.split("|")]
+            elif get_kind == "command":
+                try:
+                    value = json.loads(get_value) if get_value.strip().startswith("[") else get_value.split()
+                except ValueError:
+                    return {"error": "For a command install, give get_value as a JSON list, such as [\"sdkmanager\", \"platform-tools\"]."}
             raw = {"id": tool_id, "group": group, "name": name, "what": what, "check_kind": check_kind, "check_value": check_value, "get_kind": get_kind,
-                   "get_value": [x.strip() for x in get_value.split("|")] if get_kind == "steps" else get_value, "capabilities": [c for c in capabilities.split(",") if c.strip()]}
+                   "get_value": value, "capabilities": [c for c in capabilities.split(",") if c.strip()]}
             try:
                 entry = reception.propose_tool(app_ledger, raw, why, Actor.agent(f"{side}_service"))
             except reception.ServiceError as exc:
@@ -1075,11 +1102,28 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             opened[url.strip()] = text  # only pages actually read can be cited
             return {"title": title, "text": text[:14000]}
 
-        tools = [open_asks, read_example, write_tab_file, read_tab_files, build_tab, propose_tab] + ([project_environment, propose_install] if side == "internal" else [WebSearchTool(), open_web_page, write_skill, mcp_server_tools, propose_connection, connections, call_service])
+        def dismiss_tab_idea(key: str) -> dict[str, Any]:
+            """Record that the person doesn't want a tab for one of tab_ideas (use its key), so it isn't suggested again for this project. Only when they've said so."""
+            tabideas.dismiss(app_ledger, project_id, key, Actor.agent(f"{side}_service"))
+            return {"status": "It won't be suggested again for this project."}
+
+        def check_program(name: str) -> dict[str, Any]:
+            """Read-only: whether a program is on this computer (including ones installed since the app started), where, and its version. name is the program's command, such as java, gradle or sdkmanager."""
+            return reception._cli({"cli": name.strip(), "exe": [name.strip()], "version": ["--version"]}) | {"path": conn.which(name.strip()) or ""}
+
+        def programs() -> list[dict[str, Any]]:
+            """Read-only: the programs and toolchains the person approved, whether each is installed now, and how it's installed."""
+            return [t for t in reception.catalog_view(services_context(), True) if t.get("custom")]
+
+        tools = [open_asks, read_example, write_tab_file, read_tab_files, build_tab, propose_tab, dismiss_tab_idea] + ([project_environment, propose_install, check_program, programs, search_winget, propose_tool] if side == "internal" else [WebSearchTool(), open_web_page, write_skill, mcp_server_tools, propose_connection, connections, call_service])
         threaded = tools
         earlier = "\n".join(f"{m['role']}: {m['text'][:600]}" for m in service_messages(side)[-10:])
         state = led.state()
+        ideas = [{k: v for k, v in c.items() if k != "weight"} for c in tabideas.candidates(app_ledger.root, app_ledger, led.root, shape.team(state))]
         values = {"message": message, "project": f"{state.meta.get('name')} (team: {', '.join(shape.team(state))})", "earlier": earlier, "skills": tabkit.builtin_skills(connector=side == "external"),
+                  "tab_ideas": ideas or "None right now.",
+                  "project_files": hq.project_files(led.root),
+                  "tab_python": tabkit.python_packages(led.root, sorted(reception._imports(led.root))[:40]),
                   "project_folder": f"{led.root} (files saved here, such as mechanics/cad/ for CAD or simulation models, are seen by every department)"}
         from .threads import _threaded
 

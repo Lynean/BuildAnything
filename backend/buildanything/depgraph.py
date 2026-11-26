@@ -14,7 +14,7 @@ from typing import Any
 from . import memo, firmware, mechanical as mech
 from .ledger import Ledger
 
-DEPARTMENT_NODES = {"Mechanical": ("part",), "Electrical": ("component", "net", "board_block"), "Software": ("block", "packet"), "Procurement": ()}
+DEPARTMENT_NODES = {"Mechanical": ("part",), "Electrical": ("component", "net", "board_block"), "Software": ("block", "packet"), "Procurement": (), "Simulation": ("block", "part", "packet", "component")}
 C_PACKET = re.compile(r"\bba_([a-z0-9_]+?)_(?:t|encode|decode)\b")
 
 

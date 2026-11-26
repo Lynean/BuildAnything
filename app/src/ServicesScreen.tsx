@@ -8,7 +8,7 @@ import ConnectionsAdmin from "./ConnectionsAdmin";
 
 // Reception: External Service (Cloud, App) and Internal Service (Platform, Project).
 // Nothing is installed until a person presses Install or approves an agent's proposal. API keys go straight to the keyring.
-interface How { kind: "winget" | "pip" | "key" | "steps"; label: string; id?: string; package?: string; where?: string; steps?: string[]; }
+interface How { kind: "winget" | "pip" | "key" | "steps" | "command"; label: string; id?: string; package?: string; where?: string; steps?: string[]; command?: string[]; }
 interface Tool { id: string; group: string; name: string; what: string; capabilities: string[]; status: { ready: boolean; detail: string; version?: string }; how: How; custom?: boolean; }
 interface ToolProposal { entry: { id: string; group: string; name: string; what: string; check: Record<string, unknown>; get: Record<string, unknown> }; why: string; by: string; status: string; found?: { ready: boolean; detail: string }; }
 interface Request { id: string; service: string; title: string; why: string; status: string; by: string; at: string; commands: string[]; result?: string; reason?: string; log: string; project?: string; }
@@ -33,7 +33,7 @@ function Verification({ s }: { s: Skill }) {
 
 const TAB_NAMES: Record<string, string> = { cloud: "Cloud", app: "App", platform: "Platform", project: "Project" };
 const SIDES = { external: { title: "External Service", groups: ["cloud", "app"], intro: "Connects the app to outside services (online APIs and MCP servers) so the agents can use them, guiding you through the setup. For programs you operate yourself, it writes Skills: guides the departments' agents follow to help you use them." },
-  internal: { title: "Internal Service", groups: ["platform", "project"], intro: "Looks after the open project's own Python environment, and makes tool tabs for local tools such as MuJoCo or data plots." } };
+  internal: { title: "Internal Service", groups: ["platform", "project"], intro: "Looks after what the project's code needs on this computer: its Python environment, and the programs and toolchains it builds and runs with (compilers, SDKs, build tools). It also makes tool tabs. Every install waits for you." } };
 
 function ToolCard({ tool, onInstall, onKey, busy, why, onUse }: { tool: Tool; onInstall: (t: Tool) => void; onKey: (t: Tool, key: string) => void; busy: boolean; why?: string; onUse?: (t: Tool, on: boolean) => void }) {
   const [key, setKey] = useState("");
@@ -107,6 +107,31 @@ export default function ServicesScreen({ side }: { side: "external" | "internal"
           <div className="row"><button className="primary" disabled={!!busy} onClick={() => decide(r, true)}>Approve and install</button><button disabled={!!busy} onClick={() => decide(r, false)}>Reject</button></div>
         </div>
       ))}
+      {side === "internal" && (view?.toolProposals ?? []).filter((t) => t.status === "waiting").map((t) => (
+        <div key={t.entry.id} className="note service-request">
+          <div><b>{t.by.replace("_", " ")} proposes a program for this computer: {t.entry.name}</b> <span className="hint">{t.entry.what} {t.why}</span></div>
+          <div className="hint">How it's checked: <code className="mono small-text">{JSON.stringify(t.entry.check)}</code>. How it's installed: <code className="mono small-text">{JSON.stringify(t.entry.get)}</code>.{t.found ? (t.found.ready ? " It's already installed." : " Not installed yet.") : ""}</div>
+          <div className="row">
+            <button className="primary" disabled={!!busy} onClick={() => run("Approving", async () => setView(await call<View>(`/services/tools/${t.entry.id}/decide`, "POST", { approve: true, project: projectId })))}>Approve</button>
+            <button disabled={!!busy} onClick={() => run("Rejecting", async () => setView(await call<View>(`/services/tools/${t.entry.id}/decide`, "POST", { approve: false, reason: "Not now.", project: projectId })))}>Reject</button>
+            <span className="hint">Approving adds it to the list below. Installing it is a separate step you approve.</span>
+          </div>
+        </div>
+      ))}
+      {side === "internal" && (view?.tools ?? []).some((t) => t.custom) && (
+        <details className="card stage-report" open>
+          <summary>Programs and toolchains on this computer</summary>
+          <ul className="status-list">{(view?.tools ?? []).filter((t) => t.custom).map((t) => (
+            <li key={t.id}>
+              <i className={`dot ${t.status.ready ? "pass" : "warn"}`} />
+              <span><b>{t.name}</b> <span className="hint">{t.status.ready ? `Installed${t.status.version ? `: ${t.status.version}` : ""}.` : t.status.detail}</span></span>
+              {!t.status.ready && t.how.kind !== "steps" && t.how.kind !== "key" && <button className="small" disabled={!!busy} onClick={() => run("Installing", async () => setView(await call<View>("/services/install", "POST", { service: t.id, project: projectId, why: "Pressed Install." })))}>Install</button>}
+              {!t.status.ready && t.how.kind === "steps" && <span className="hint">{(t.how.steps ?? []).join(" ")}</span>}
+            </li>
+          ))}</ul>
+          <p className="hint">Internal Service proposes programs the project's code needs, such as a compiler, an SDK or a build tool. Each one, and each install, waits for you.</p>
+        </details>
+      )}
       {side === "external" && skills.filter((s) => s.status === "waiting").map((s) => (
         <div key={s.id} className="note service-request">
           <div><b>External Service wrote a Skill for {s.departments.join(", ")}: {s.title}</b> <span className="hint">(for {s.tool}). {s.summary}</span></div>

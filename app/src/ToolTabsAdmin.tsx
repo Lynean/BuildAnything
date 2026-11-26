@@ -4,7 +4,7 @@ import ToolTab from "./ToolTab";
 
 // Reception's Tool tabs: tabs the Service agents wrote, waiting for the person; approved ones with the projects that
 // show them; and the one switch that lets tab data scripts run in the sandbox. Only a person uses any of this.
-interface Tab { id: string; title: string; approved_title?: string; tool: string; department: string; approved_department?: string; summary: string; why: string; exe: string; approved_exe?: string; adapter: boolean; status: string; intact: boolean; projects: string[]; approvedCopy: boolean; by?: string; rejected_because?: string; }
+interface Tab { id: string; title: string; approved_title?: string; tool: string; department: string; approved_department?: string; summary: string; why: string; exe: string; approved_exe?: string; adapter: boolean; status: string; intact: boolean; projects: string[]; approvedCopy: boolean; by?: string; rejected_because?: string; reads?: { path: string; what: string; made_by: string }[]; }
 interface View { tabs: Tab[]; scripts: boolean; }
 
 function Files({ id, which }: { id: string; which: "proposed" | "approved" }) {
@@ -45,6 +45,7 @@ export default function ToolTabsAdmin() {
         <div key={t.id} className="note service-request">
           <div><b>{t.by?.replace("_", " ") ?? "A Service agent"} made a tab for {t.department}: {t.title}</b> <span className="hint">(for {t.tool}). {t.summary}</span></div>
           <p className="hint">{t.why} {t.adapter ? (t.exe ? `Its data script may run one program: ${t.exe}.` : "Its data script runs Python only, no other program.") : "No data script: it reads project files only."}</p>
+          {(t.reads ?? []).length > 0 && <details open><summary>The project files it reads</summary><ul className="status-list">{(t.reads ?? []).map((r) => <li key={r.path}><span className="mono">{r.path}</span> <span className="hint">{r.what}{r.made_by ? `, made by ${r.made_by}` : ""}</span></li>)}</ul><p className="hint">Once it shows on a project, any department that makes a missing one is told to make it there.</p></details>}
           <details><summary>Read its files</summary><Files id={t.id} which="proposed" /></details>
           <div className="row">
             <button className="primary" disabled={!!busy} onClick={() => decide(t, true)}>Approve{projectId ? ` and show in ${projectName}` : ""}</button>

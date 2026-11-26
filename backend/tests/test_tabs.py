@@ -125,3 +125,15 @@ def test_a_running_agent_keeps_a_short_trail_for_the_person(tmp_path):
     assert len(jobs.trail(led, live.id)["steps"]) == jobs.MAX_STEPS  # it stays short
     jobs.agent_ended(led, live)
     assert jobs.trail(led, live.id) is None and jobs.running(led) == []
+
+
+def test_a_tab_script_can_load_pythons_own_secrets_module_but_not_a_project_secret(app, tmp_path):
+    project = tmp_path / "projects" / "demo"
+    project.mkdir(parents=True)
+    (project / "secrets.txt").write_text("hush", encoding="utf-8")
+    tabs.set_scripts_allowed(app, True, HUMAN)
+    tabs.write_file(app.root, "lib", "Tab.tsx", 'export default function Tab() { return null; }')
+    tabs.write_file(app.root, "lib", "adapter.py", "import secrets\ndef collect(project, out, tool):\n    return {'token': len(secrets.token_hex(4))}\n")
+    assert tabs.run(app.root, app, "lib", project, "proposed")["output"] == {"token": 8}  # numpy and MuJoCo load this standard module
+    tabs.write_file(app.root, "lib", "adapter.py", "def collect(project, out, tool):\n    return {'text': (project / 'secrets.txt').read_text()}\n")
+    assert "secrets" in tabs.run(app.root, app, "lib", project, "proposed")["error"]

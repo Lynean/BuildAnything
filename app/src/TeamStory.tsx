@@ -7,15 +7,15 @@ interface Step { i: number; at: string; kind: "say" | "hand" | "status" | "spawn
 
 // The stage in three rows, in percent of its width and height, kept clear of the edges:
 // you, Headquarters and Reception on top; the project's own departments in the middle; the record and the checks below.
-const DEPARTMENTS = ["Mechanical", "Electrical", "Software", "Procurement"];
+const DEPARTMENTS = ["Mechanical", "Electrical", "Software", "Procurement", "Simulation"];
 const SERVICES = ["External Service", "Internal Service"];
 // Each member's colour, the same as on the canvas: used for their outline on the stage and their messages in the chat.
-const COLOR: Record<string, string> = { You: "#e8a659", Headquarters: "#54d6c2", Mechanical: "#f0894b", Electrical: "#f2c94c", Software: "#5aa9ff", Procurement: "#6fd08c",
+const COLOR: Record<string, string> = { You: "#e8a659", Headquarters: "#54d6c2", Mechanical: "#f0894b", Electrical: "#f2c94c", Software: "#5aa9ff", Procurement: "#6fd08c", Simulation: "#3fb6d9",
   "External Service": "#8fa8c8", "Internal Service": "#9aa7b8", Ledger: "#a493f2", Checks: "#ff6f91" };
 const colorOf = (name: string) => COLOR[name] ?? COLOR[name.replace(/ clone \d+$/, "")] ?? "#8c93a1";
 const time = (at: string) => { const d = new Date(at); return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : d.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
 const ROLE: Record<string, string> = { You: "human", Ledger: "data", Checks: "tool", "External Service": "service", "Internal Service": "service" };
-const INITIALS: Record<string, string> = { You: "You", Headquarters: "HQ", Mechanical: "ME", Electrical: "EE", Software: "SW", Procurement: "PR", Ledger: "", Checks: "✓", "External Service": "EX", "Internal Service": "IN" };
+const INITIALS: Record<string, string> = { You: "You", Headquarters: "HQ", Mechanical: "ME", Electrical: "EE", Software: "SW", Procurement: "PR", Simulation: "SIM", Ledger: "", Checks: "✓", "External Service": "EX", "Internal Service": "IN" };
 
 function layout(departments: string[]): Record<string, [number, number]> {
   const seats: Record<string, [number, number]> = { You: [11, 17], Headquarters: [38, 17], "External Service": [66, 17], "Internal Service": [89, 17], Ledger: [38, 84], Checks: [66, 84] };

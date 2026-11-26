@@ -53,6 +53,8 @@ class Tool:
 def install(work: Path, adapter: Path, project: Path, out: Path, projects_root: Path, exe: str | None) -> None:
     work, adapter, project, out, projects_root = (p.resolve() for p in (work, adapter, project, out, projects_root))
     allowed_exe = _resolved(exe) if exe else None
+    # Python's own installed libraries: their files have names like secrets.py (a standard module NumPy loads), which aren't secrets.
+    library = {Path(p).resolve() for p in {sys.prefix, sys.base_prefix, sys.exec_prefix} if p}
 
     def hook(event: str, args: tuple) -> None:
         if event.startswith(BLOCKED):
@@ -70,11 +72,12 @@ def install(work: Path, adapter: Path, project: Path, out: Path, projects_root: 
             if target is None:
                 return
             text = str(target)
-            if SECRET.search(text):
+            writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or bool((flags or 0) & WRITE_FLAGS)
+            python_library = not writing and any(_inside(target, root) for root in library) and target.suffix.lower() in (".py", ".pyc", ".pyd", ".so", ".dll", ".pth")
+            if SECRET.search(text) and not python_library:
                 raise PermissionError(f"Tab scripts can't open secrets or Git files: {target.name}")
             if _inside(target, projects_root) and not _inside(target, project) and not _inside(target, adapter.parent.parent.parent):
                 raise PermissionError("Tab scripts can read only the project they run on.")
-            writing = (isinstance(mode, str) and any(c in mode for c in "wax+")) or bool((flags or 0) & WRITE_FLAGS)
             if writing and not (_inside(target, out) or _inside(target, work)):
                 raise PermissionError(f"Tab scripts write only into their out folder, not {target.name}. The project's files are read-only.")
         if event in ("os.remove", "os.rename", "os.replace", "os.rmdir", "os.mkdir", "shutil.rmtree", "shutil.move", "shutil.copyfile"):

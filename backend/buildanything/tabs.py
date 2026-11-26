@@ -27,7 +27,7 @@ SDK = APP / "src" / "tab-sdk"
 ESBUILD = APP / "node_modules" / "@esbuild" / "win32-x64" / "esbuild.exe"
 TAB_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,40}$")
 FILE = re.compile(r"^(?:[A-Za-z0-9_-]+/)?[A-Za-z0-9_-]+\.(?:tsx|ts|py|md|json)$")
-DEPARTMENTS = ("Mechanical", "Electrical", "Software", "Procurement")
+DEPARTMENTS = ("Mechanical", "Electrical", "Software", "Procurement", "Simulation")
 ALLOWED_PACKAGES = ("react", "react-dom", "scheduler", "three")
 MAX_FILE = 60_000
 MAX_FILES = 16
@@ -190,6 +190,74 @@ def run_dir(app_root: Path, tab_id: str, project_id: str, which: str) -> Path:
     return folder(app_root, tab_id) / "runs" / which / project_id
 
 
+def tab_python(project_root: Path) -> str:
+    """Data scripts run in the project's own Python environment, so a tab uses the same packages as the program it shows.
+    Before the project has one, they use the app's Python."""
+    from . import services
+
+    found = services.project_python(project_root)
+    return str(found) if found else sys.executable
+
+
+def python_packages(project_root: Path, names: list[str]) -> dict[str, Any]:
+    """Which of these packages the tab's Python can import, for the Service agents."""
+    python = tab_python(project_root)
+    script = "import importlib.util, json, sys; print(json.dumps({n: importlib.util.find_spec(n) is not None for n in sys.argv[1:]}))"
+    try:
+        done = subprocess.run([python, "-c", script, *names], capture_output=True, text=True, timeout=30)
+        have = json.loads(done.stdout.strip().splitlines()[-1]) if done.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        have = {}
+    own = python != sys.executable
+    return {"python": "the project's own environment (.venv in the project folder)" if own else "the app's own Python, because this project has no environment yet; once Internal Service sets one up, tab scripts move to it",
+            "has": sorted(n for n, ok in have.items() if ok), "missing": sorted(n for n, ok in have.items() if not ok)}
+
+
+def _safe_glob(project_root: Path, pattern: str) -> list[Path]:
+    pattern = pattern.strip().replace("\\", "/").lstrip("/")
+    if not pattern or ".." in Path(pattern).parts:
+        return []
+    root = project_root.resolve()
+    return [p for p in sorted(root.glob(pattern))[:500] if p.is_file() and not SECRET.search(p.relative_to(root).as_posix())]
+
+
+def reads_status(project_root: Path, reads: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """For each file pattern a tab declares, how many files match in this project now."""
+    return [{**r, "found": len(_safe_glob(project_root, r["path"]))} for r in reads]
+
+
+def clean_reads(raw: Any) -> list[dict[str, str]]:
+    """The files a tab reads: [{path, what, made_by}], path a glob relative to the project such as mechanics/sim/runs/*.json."""
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not str(item.get("path", "")).strip():
+            continue
+        path = str(item["path"]).strip().replace("\\", "/").lstrip("/")
+        if ".." in Path(path).parts:
+            raise TabError(f"{path}: a tab reads only inside the project.")
+        made_by = str(item.get("made_by", "")).strip()
+        if made_by not in (*DEPARTMENTS, "Person", ""):
+            raise TabError(f"{path}: made_by is the department that makes these files ({', '.join(DEPARTMENTS)}), or Person.")
+        out.append({"path": path, "what": str(item.get("what", "")).strip()[:200], "made_by": made_by})
+    return out[:20]
+
+
+def briefs_due(app_root: Path, app_ledger: Ledger, project_root: Path, team: list[str]) -> list[dict[str, Any]]:
+    """Departments that make files an approved tab on this project reads, where some of those files don't exist yet.
+    Keyed by the tab's approved version, so a department hears again only when the tab changes."""
+    out = []
+    for t in listing(app_root, app_ledger):
+        if not (t.get("approved_hash") and t["intact"] and project_root.name in t["projects"]):
+            continue
+        status = reads_status(project_root, t.get("approved_reads") or [])
+        for department in sorted({r["made_by"] for r in status if r["made_by"] in team}):
+            mine = [r for r in status if r["made_by"] == department]
+            if any(r["found"] == 0 for r in mine):
+                out.append({"tab": t["id"], "version": t["approved_hash"], "department": department, "title": t.get("approved_title", t["id"]),
+                            "shown_in": t.get("approved_department", ""), "summary": t.get("summary", ""), "reads": mine})
+    return out
+
+
 def run(app_root: Path, app_ledger: Ledger, tab_id: str, project_root: Path, which: str = "approved") -> dict[str, Any]:
     """Runs the tab's data script on one project in the sandbox and keeps its output for the tab."""
     if not scripts_allowed(app_ledger):
@@ -211,7 +279,7 @@ def run(app_root: Path, app_ledger: Ledger, tab_id: str, project_root: Path, whi
 
     started = time.time()
     try:
-        done = subprocess.run([sys.executable, "-I", str(box), str(work), str(src / "adapter.py"), str(project_root), str(out), str(project_root.parent), exe],
+        done = subprocess.run([tab_python(project_root), "-I", str(box), str(work), str(src / "adapter.py"), str(project_root), str(out), str(project_root.parent), exe],
                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUN_SECONDS, env=env, cwd=str(work))
     except subprocess.TimeoutExpired:
         result = {"ok": False, "error": f"The data script ran for over {RUN_SECONDS} s and was stopped."}
@@ -287,7 +355,8 @@ def list_project_files(project_root: Path, directory: str = "", pattern: str = "
 
 # ---- proposing, approving, showing ----
 
-def propose(app_root: Path, app_ledger: Ledger, tab_id: str, tool: str, department: str, title: str, summary: str, exe: str, why: str, actor: Actor) -> dict[str, Any]:
+def propose(app_root: Path, app_ledger: Ledger, tab_id: str, tool: str, department: str, title: str, summary: str, exe: str, why: str, actor: Actor, reads: Any = None) -> dict[str, Any]:
+    reads = clean_reads(reads)
     if department not in DEPARTMENTS:
         raise TabError(f"department is one of {', '.join(DEPARTMENTS)}.")
     title = title.strip()
@@ -306,7 +375,7 @@ def propose(app_root: Path, app_ledger: Ledger, tab_id: str, tool: str, departme
         exe_path = str(Path(found).resolve())
     meta = _manifest(app_root, tab_id)
     meta.update({"id": tab_id, "tool": tool.strip()[:60], "department": department, "title": title, "summary": summary.strip()[:600], "why": why.strip()[:600],
-                 "exe": exe_path, "adapter": "adapter.py" in files, "status": "waiting", "proposed_hash": _hash(files), "by": actor.name})
+                 "exe": exe_path, "adapter": "adapter.py" in files, "status": "waiting", "proposed_hash": _hash(files), "by": actor.name, "reads": reads})
     _save_manifest(app_root, tab_id, meta)
     app_ledger.append(actor, "tab.proposed", id=tab_id, tool=meta["tool"], department=department, title=title, hash=meta["proposed_hash"])
     return meta
@@ -326,7 +395,7 @@ def decide(app_root: Path, app_ledger: Ledger, tab_id: str, approve: bool, reaso
         shutil.copytree(base / "proposed", base / "approved")
         shutil.rmtree(base / "build-approved", ignore_errors=True)
         meta.update({"status": "approved", "approved_hash": meta["proposed_hash"], "approved_exe": meta.get("exe", ""), "approved_title": meta["title"],
-                     "approved_department": meta["department"], "approved_adapter": meta.get("adapter", False)})
+                     "approved_department": meta["department"], "approved_adapter": meta.get("adapter", False), "approved_reads": meta.get("reads", [])})
     else:
         meta.update({"status": "rejected", "rejected_because": reason.strip()[:600]})
     _save_manifest(app_root, tab_id, meta)

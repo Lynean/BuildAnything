@@ -54,7 +54,7 @@ function JoinProject({ onJoined }: { onJoined: (p: Project) => void }) {
   );
 }
 
-interface Need { goto?: string; kind: string; text: string; gate?: string; }
+interface Need { goto?: string; kind: string; text: string; gate?: string; key?: string; }
 interface Hq { eventCount: number; running: string | null; needs: Need[]; conceptApproved: boolean; requests: { id: string; from: string; to: string; question: string; answer: string | null; status: string; reason?: string; route?: string }[]; }
 
 function TeamPanel({ p, project, setProject, busy, run, setNote }: { p: string; project: Project; setProject: (x: Project) => void; busy: string; run: (label: string, work: () => Promise<void>) => void; setNote: (t: string) => void }) {
@@ -288,6 +288,7 @@ export default function Headquarters() {
                   <button className="small" disabled={!!busy || !waive.trim()} onClick={() => run("Saving", async () => setProject(await call<Project>(`${p}/hq/waive-research`, "POST", { reason: waive })))}>Continue without</button>
                 </>}
                 {n.goto && <ScreenChip screen={n.goto as string}>Open</ScreenChip>}
+                {n.kind === "tab_idea" && <button className="small" disabled={!!busy} onClick={() => run("Saving", async () => { await call(`${p}/tab-ideas/dismiss`, "POST", { key: n.key }); setHq(await call<Hq>(`${p}/hq`)); })}>Not needed</button>}
                 {n.kind === "gate" && <button className="primary small" disabled={!!busy} onClick={() => run("Approving", async () => setProject(await call<Project>(`${p}/gates/${n.gate}/approve`, "POST")))}>Approve</button>}
               </span>
             </div>

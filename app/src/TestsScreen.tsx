@@ -3,7 +3,8 @@ import { call, useBusy, useProject } from "./api";
 import LaptopBench from "./LaptopBench";
 
 interface Result { value: number | null; outcome: string; evidence: string; by: string; }
-interface Test { id: string; key: string; title: string; owner: string; covers: string[]; procedure: string; pass_if: string; metric: string | null; unit: string | null; min: number | null; max: number | null; uses: string[]; status: string; state: string; result: Result | null; staleBecause: string[]; relies: string[]; stage: string; automatic: string; }
+interface Proposal { id: string; value: number | null; outcome: string; evidence: string; files: string[]; by: string; at: string; }
+interface Test { id: string; key: string; title: string; owner: string; covers: string[]; procedure: string; pass_if: string; metric: string | null; unit: string | null; min: number | null; max: number | null; uses: string[]; status: string; state: string; result: Result | null; proposals?: Proposal[]; staleBecause: string[]; relies: string[]; stage: string; automatic: string; }
 interface DepOption { id: string; label: string; kind: string; }
 interface Row { id: string; key: string; text: string; personSaid: string; addedBecause: string; status: string; tests: string[]; deviation: string | null; }
 interface Deviation { id: string; key: string; what: string; why: string; restores: string; status: string; by: string; closedBecause?: string; }
@@ -91,6 +92,17 @@ function TestCard({ test, base, options, onView }: { test: Test; base: string; o
       </details>
       {test.result && <p className="hint">Last result by {test.result.by}: {test.result.value !== null ? `${test.result.value} ${test.unit ?? ""}, ` : ""}{test.result.outcome}. {test.result.evidence}</p>}
       {test.state === "retest" && <p className="warn-text">Changed since this was tested: {test.staleBecause.join(", ")}.</p>}
+      {(test.proposals ?? []).map((p) => (
+        <div key={p.id} className="test-proposal">
+          <p><b>{p.by.replace("_", " ")} proposes:</b> {p.value !== null ? `${p.value} ${test.unit ?? ""}` : p.outcome}. {p.evidence}</p>
+          {p.files.length > 0 && <div className="row">{p.files.map((f) => <button key={f} type="button" className="small mono" onClick={() => window.dispatchEvent(new CustomEvent("ba:open-file", { detail: f }))}>{f.split("/").pop()}</button>)}</div>}
+          <div className="row">
+            <button className="primary small" disabled={!!busy} onClick={() => run("Accepting", async () => onView(await call<View>(`${base}/proposals/${p.id}/accept`, "POST")))}>Accept as the result</button>
+            <button className="small" disabled={!!busy} onClick={() => run("Dismissing", async () => onView(await call<View>(`${base}/proposals/${p.id}/dismiss`, "POST", { reason: "Not accepted." })))}>Dismiss</button>
+            <span className="hint">{p.value !== null ? "The app judges the number against the limits." : ""}</span>
+          </div>
+        </div>
+      ))}
       {error && <p className="error" role="alert">{error}</p>}
       {canRecord && (
         <div className="test-record">

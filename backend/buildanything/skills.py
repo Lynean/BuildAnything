@@ -25,7 +25,7 @@ MAX_SKILL = 16_000
 SCRIPT_EXT = {".pas", ".js", ".py", ".lua", ".txt", ".md", ".cir", ".asc", ".net", ".csv", ".json", ".xml", ".tcl", ".scr", ".sch", ".kicad_sch", ".bas"}
 # Which department uses tools with a capability, by the capability's first word.
 CAPABILITY_DEPARTMENT = {"cad": "Mechanical", "fea": "Mechanical", "eda": "Electrical", "spice": "Electrical", "fw": "Electrical", "serial": "Electrical",
-                         "docs": "Electrical", "parts": "Procurement", "vcs": "Software", "pkg": "Software", "sim": "Software", "game": "Software", "web": "Software"}
+                         "docs": "Electrical", "parts": "Procurement", "vcs": "Software", "pkg": "Software", "sim": "Simulation", "game": "Software", "web": "Software"}
 
 
 class SkillError(LedgerError):

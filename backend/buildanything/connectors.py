@@ -117,9 +117,62 @@ def fingerprint(tools: list[dict[str, Any]]) -> str:
     return hashlib.sha256(json.dumps(body).encode("utf-8")).hexdigest()
 
 
+TOOLCHAIN_VAR = re.compile(r"(_HOME|_ROOT|_SDK|_SDK_ROOT|_PATH)$", re.I)
+
+
+def _registry_environment() -> dict[str, str]:
+    """What Windows has recorded for new programs now: PATH and toolchain variables such as JAVA_HOME or ANDROID_HOME,
+    including ones set by an install that finished after this app started. Empty elsewhere."""
+    if os.name != "nt":
+        return {}
+    import winreg
+
+    found: dict[str, str] = {}
+    paths: list[str] = []
+    for hive, key in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"), (winreg.HKEY_CURRENT_USER, "Environment")):
+        try:
+            with winreg.OpenKey(hive, key) as handle:
+                i = 0
+                while True:
+                    try:
+                        name, value, _kind = winreg.EnumValue(handle, i)
+                    except OSError:
+                        break
+                    i += 1
+                    if not isinstance(value, str):
+                        continue
+                    value = winreg.ExpandEnvironmentStrings(value)
+                    if name.upper() == "PATH":
+                        paths.append(value)
+                    elif TOOLCHAIN_VAR.search(name) and not SECRET_NAME.search(name):
+                        found[name] = value
+        except OSError:
+            continue
+    if paths:
+        found["PATH"] = os.pathsep.join(paths)
+    return found
+
+
 def clean_environment() -> dict[str, str]:
-    """A connected program never inherits this app's API keys."""
-    return {k: v for k, v in os.environ.items() if not SECRET_NAME.search(k)}
+    """A connected program never inherits this app's API keys. It does see programs installed since the app started:
+    PATH entries and toolchain variables Windows recorded later are added, without changing what was already set."""
+    env = {k: v for k, v in os.environ.items() if not SECRET_NAME.search(k)}
+    recorded = _registry_environment()
+    if recorded.get("PATH"):
+        have = {p.strip().lower() for p in env.get("PATH", "").split(os.pathsep) if p.strip()}
+        extra = [p for p in recorded["PATH"].split(os.pathsep) if p.strip() and p.strip().lower() not in have]
+        env["PATH"] = os.pathsep.join([env.get("PATH", ""), *extra]).strip(os.pathsep)
+    for name, value in recorded.items():
+        if name != "PATH" and name not in env:
+            env[name] = value
+    return env
+
+
+def which(program: str) -> str | None:
+    """Finds a program the way a fresh window would, including ones installed since the app started."""
+    import shutil
+
+    return shutil.which(program, path=clean_environment().get("PATH"))
 
 
 def parse_target(target: str) -> dict[str, Any]:

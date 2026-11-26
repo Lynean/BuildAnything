@@ -18,7 +18,7 @@ from .ledger import Actor, Ledger, LedgerError, ProjectState
 KINDS = ("part", "component", "requirement", "add_requirement", "drop_requirement", "deviation", "packet", "middleware", "other")
 NEEDS_A_REASON = ("drop_requirement", "deviation")
 PART_FIELDS = ("material", "process", "qty", "mass_g", "unit_cost", "remove")  # remove: true takes the part off the list
-DEPARTMENTS = ("Electrical", "Mechanical", "Software", "Procurement")
+DEPARTMENTS = ("Electrical", "Mechanical", "Software", "Procurement", "Simulation")
 SYSTEM = Actor.system("headquarters")
 
 
@@ -204,7 +204,7 @@ def propose(ledger: Ledger, title: str, why: str, kind: str, target: str, detail
 
 
 class MissedImpact(BaseModel):
-    department: Literal["Electrical", "Mechanical", "Software", "Procurement", "Headquarters"]
+    department: Literal["Electrical", "Mechanical", "Software", "Procurement", "Simulation", "Headquarters"]
     item: str
     why: str
     action: str
@@ -259,7 +259,7 @@ def waiting_review(ledger: Ledger) -> list[str]:
 
 class Route(BaseModel):
     action: Literal["forward", "answer_from_record", "decline", "ask_person", "reword"]
-    handler: Literal["Electrical", "Mechanical", "Software", "Procurement", "None"] = Field(description="Who should handle it. None when declining, or when asking the person")
+    handler: Literal["Electrical", "Mechanical", "Software", "Procurement", "Simulation", "None"] = Field(description="Who should handle it. None when declining, or when asking the person")
     reason: str = Field(description="One plain sentence the requester will see")
     earlier_id: str | None = Field(description="For answer_from_record: the ID of the earlier request that already answers this")
 
@@ -269,6 +269,7 @@ ROLES = {
     "Mechanical": "Parts, structure, mounting, fit, materials, CAD and fabrication.",
     "Software": "High-level code, computer programs, user interfaces and open-source choices.",
     "Procurement": "Buying lists, suppliers, orders and costs.",
+    "Simulation": "Simulations of the models and code, their runs and results: physics, circuits, structures and other analyses.",
 }
 ROUTINE_KINDS = ("part",)
 

@@ -324,7 +324,7 @@ def test_python_blocks_round_trip_with_python_comments(tmp_path):
 
 
 def test_agents_cannot_overwrite_generated_files():
-    assert sw.path_problems([host_file("generated/packets.py")]) and sw.path_problems([host_file("app/evil.sh")])
+    assert sw.path_problems([host_file("generated/packets.py")]) and sw.path_problems([host_file("app/.env")]) and sw.path_problems([host_file("app/signing.keystore")])
     assert fw.documentation_problems([fw.FileOut(path="include/ba_packets.h", owner="Electrical", blocks=[])])
 
 

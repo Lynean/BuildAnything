@@ -5,7 +5,7 @@ import { call } from "./api";
 // tab's code can't reach the app's routes or buttons. It asks for data over postMessage, and only these questions are
 // answered: who am I, the data script's output, run it again, read a project file, list project files.
 const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:";
-const ACCENT: Record<string, string> = { Mechanical: "#f0894b", Electrical: "#f2c94c", Software: "#5aa9ff", Procurement: "#6fd08c" };
+const ACCENT: Record<string, string> = { Mechanical: "#f0894b", Electrical: "#f2c94c", Software: "#5aa9ff", Procurement: "#6fd08c", Simulation: "#3fb6d9" };
 
 export interface ToolTabInfo { id: string; title: string; tool: string; adapter: boolean; scripts: boolean; }
 

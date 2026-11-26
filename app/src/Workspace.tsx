@@ -90,7 +90,11 @@ function BlockPanel({ block, lang, open, onToggle, notes }: { block: Block; lang
 interface Space { open: string[]; active: string; expanded: string[]; raw: boolean; }
 const EMPTY: Space = { open: [], active: "", expanded: [], raw: false };
 
-export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshooting: () => void }) {
+// The Software screen, and the Simulation screen for the Simulation department's own program (firmware/simulation/).
+const SIM_DEVICE = "simulation";
+
+export default function Workspace({ onOpenTroubleshooting, department = "Software" }: { onOpenTroubleshooting: () => void; department?: "Software" | "Simulation" }) {
+  const mine = (d: string) => (department === "Simulation" ? d === SIM_DEVICE : d !== SIM_DEVICE);
   const [projects, setProjects] = useState<Summary[] | null>(null);
   const [projectId, setProjectId] = useState<string | null>(() => { try { return localStorage.getItem("ba.project"); } catch { return null; } });
   const [devices, setDevices] = useState<string[]>([]);
@@ -99,7 +103,7 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
   const [spaces, setSpaces] = useState<Record<string, Space>>({});
   const [elec, setElec] = useState<Elec | null>(null);
   const [side, setSide] = useState<string>("Agent");
-  const toolTabs = useToolTabs(projectId, "Software");
+  const toolTabs = useToolTabs(projectId, department);
   // Software's sections are sized by dragging their edges (or the arrow keys on an edge). Sizes are remembered on this computer.
   const stored = (key: string, fallback: number) => { try { return Number(localStorage.getItem(key)) || fallback; } catch { return fallback; } };
   const [sideW, setSideW] = useState(() => stored("ba.sideW", 290));
@@ -149,7 +153,7 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
     try { localStorage.setItem("ba.project", projectId); } catch { /* optional */ }
     setFiles({}); setSpaces({});
     call<Elec>(base).then(setElec).catch((e) => setError(e.message));
-    call<{ devices: string[]; computers: string[] }>(`${base}/firmware`).then((r) => { setDevices(r.devices); setComputers(r.computers); setDevice(r.devices[0] ?? ""); r.devices.forEach(loadFiles); }).catch((e) => setError(e.message));
+    call<{ devices: string[]; computers: string[] }>(`${base}/firmware`).then((r) => { setDevices(r.devices.filter(mine)); setComputers(r.computers); setDevice(r.devices.filter(mine)[0] ?? ""); r.devices.forEach(loadFiles); }).catch((e) => setError(e.message));
   }, [projectId]);
   useEffect(() => { if (projectId) call<{ id: string; title: string; html: string }[]>(`/projects/${projectId}/designs`).then(setDesigns).catch(() => undefined); }, [projectId]);
   useEffect(() => {
@@ -162,8 +166,8 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
     try { await work(); } catch (e) { setError((e as Error).message); } finally { setBusy(""); }
   };
 
-  if (!projects) return <div className="page"><h1>Software</h1>{error ? <p className="error" role="alert">{error}</p> : <p>Loading…</p>}</div>;
-  if (!projectId) return <div className="page"><h1>Software</h1><p className="intro">Create a project in Headquarters first.</p></div>;
+  if (!projects) return <div className="page"><h1>{department}</h1>{error ? <p className="error" role="alert">{error}</p> : <p>Loading…</p>}</div>;
+  if (!projectId) return <div className="page"><h1>{department}</h1><p className="intro">Create a project in Headquarters first.</p></div>;
 
   const ws = spaces[device] ?? EMPTY;
   const list = files[device] ?? [];
@@ -188,7 +192,7 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
 
   const reloadAll = async () => {
     const r = await call<{ devices: string[]; computers: string[] }>(`${base}/firmware`);
-    setDevices((d) => [...new Set([...d, ...r.devices])]); setComputers(r.computers); setDevice((x) => x || r.devices[0] || "");
+    setDevices((d) => [...new Set([...d, ...r.devices.filter(mine)])]); setComputers(r.computers); setDevice((x) => x || r.devices.filter(mine)[0] || "");
     r.devices.forEach(loadFiles);
     setVersion((v) => v + 1);
     setDesigns(await call(`/projects/${projectId}/designs`));
@@ -206,11 +210,11 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
   };
   const toggleAutotest = () => {
     const allowed = !setup?.autotest;
-    if (allowed && !window.confirm("Let the app run this program's tests automatically after each agent write? The code is agent-written and runs on your computer, without asking each time. The app first installs the packages in its requirements.txt into this project's Python environment. You can switch this off at any time.")) return;
+    if (allowed && !window.confirm(`Let the app run this program's code and tests? ${department === "Simulation" ? "Simulation then runs its simulations and saves the results" : "Software then runs its tests after each write"}. The code is agent-written and runs on your computer, without asking each time. The app first installs the packages in its requirements.txt into this project's Python environment. You can switch this off at any time.`)) return;
     run(allowed ? "Allowing automatic test runs" : "Stopping automatic test runs", async () => {
       await call(`${base}/firmware/${device}/autotest`, "POST", { allowed });
       setSetup(await call<Setup>(`${base}/firmware/${device}/setup`));
-      setNote(allowed ? "The code writer will now run these tests after each write and fix what fails." : "Tests now run only when you start them.");
+      setNote(allowed ? (department === "Simulation" ? "Simulation can now run its simulations and save the results." : "Software can now run its tests after each write.") : "Code now runs only when you start it.");
     });
   };
   const build = () => run(isComputer ? "Checking the code" : "Building", async () => {
@@ -291,7 +295,7 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
                       </>}
                   <button className="small" disabled={!!busy} onClick={build}>{isComputer ? "Check code" : "Build"}</button>
                   {isComputer && <button className="small" disabled={!!busy} onClick={runTests}>Run tests</button>}
-                  {isComputer && <label className="small" title="The agent's code and tests run on your computer without asking each time, in this project's Python environment with its requirements.txt installed"><input type="checkbox" checked={!!setup?.autotest} disabled={!!busy} onChange={toggleAutotest} /> Run tests after each agent write (installs its requirements)</label>}
+                  {isComputer && <label className="small" title="The agent's code and tests run on your computer without asking each time, in this project's Python environment with its requirements.txt installed"><input type="checkbox" checked={!!setup?.autotest} disabled={!!busy} onChange={toggleAutotest} /> Run code and tests (installs its requirements)</label>}
                 </div>
               </div>
               {file.blocks.length === 0
@@ -312,11 +316,11 @@ export default function Workspace({ onOpenTroubleshooting }: { onOpenTroubleshoo
           <div className="side-tabs" role="tablist">
             {[...(device && !computers.includes(device) ? ["Agent", "Device", "Debug"] : ["Agent", "Debug"]), ...toolTabs.map((t) => t.title), "Capability"].map((t) => <button key={t} role="tab" aria-selected={side === t} className={side === t ? "on" : ""} onClick={() => setSide(t)}>{t}{t === "Debug" && (sessions.length > 0 || moved.length > 0 || (setup?.linkIssues.length ?? 0) > 0) ? <i className="file-dot tab-dot" /> : null}</button>)}
           </div>
-          {side === "Capability" && <div className="side-body side-capability"><DepartmentCapabilities projectId={projectId} department="Software" /></div>}
-          {toolTabs.filter((t) => t.title === side).map((t) => <div key={t.id} className="side-body side-tool"><ToolTab projectId={projectId} projectName={projectId} department="Software" tab={t} /></div>)}
+          {side === "Capability" && <div className="side-body side-capability"><DepartmentCapabilities projectId={projectId} department={department} /></div>}
+          {toolTabs.filter((t) => t.title === side).map((t) => <div key={t.id} className="side-body side-tool"><ToolTab projectId={projectId} projectName={projectId} department={department} tab={t} /></div>)}
           {side === "Agent" && (
             <div className="side-body">
-              <DepartmentChat projectId={projectId} department="Software" compact onChange={() => { reloadAll().catch(() => undefined); }} />
+              <DepartmentChat projectId={projectId} department={department} compact onChange={() => { reloadAll().catch(() => undefined); }} />
               <div className="pane-resize row" role="separator" aria-orientation="horizontal" aria-label="Drag to resize the agent chat" title="Drag to resize" tabIndex={0} onPointerDown={startChat}
                 onKeyDown={(e) => { if (e.key === "ArrowDown") fitChat(chatH + 40); if (e.key === "ArrowUp") fitChat(chatH - 40); }} />
               {designs.length > 0 && <div className="design-list"><div className="eyebrow">Screen designs</div>{designs.map((d) => <button key={d.id} className="small" onClick={() => setDesign(d.html)}>{d.title}</button>)}</div>}

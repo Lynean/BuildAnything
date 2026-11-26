@@ -6,6 +6,7 @@ const WORDS: [RegExp, string][] = [
   [/\bElectrical\b/, "Electrical"],
   [/\bMechanical\b/, "Mechanical"],
   [/\bSoftware\b/, "Software"],
+  [/\bSimulation\b/, "Simulation"],
   [/\bProcurement\b/, "Procurement"],
   [/\bHeadquarters\b/, "Headquarters"],
   [/\bInterface\b/, "Interface"],

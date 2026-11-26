@@ -7,7 +7,7 @@ export interface Running { id: string; agent: string; area: string; title: strin
 interface Step { at: string; kind: "thought" | "tool" | "said"; text: string; }
 interface Trail { id: string; title: string; area: string; activity: string; started: number; task: string; steps: Step[]; }
 
-const DEPARTMENTS = ["Mechanical", "Electrical", "Software", "Procurement"];
+const DEPARTMENTS = ["Mechanical", "Electrical", "Software", "Procurement", "Simulation"];
 
 /** The canvas node an agent belongs to. */
 export function placeFor(r: Running, visible: Set<string>): string {

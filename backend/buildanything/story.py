@@ -10,10 +10,10 @@ from typing import Any
 from . import gates
 from .ledger import Ledger
 
-TEAM = ["You", "Headquarters", "Mechanical", "Electrical", "Software", "Procurement", "External Service", "Internal Service", "Ledger", "Checks"]
+TEAM = ["You", "Headquarters", "Mechanical", "Electrical", "Software", "Procurement", "Simulation", "External Service", "Internal Service", "Ledger", "Checks"]
 AGENT_HOME = {"electrical": "Electrical", "device_facts": "Electrical", "datasheet": "Electrical", "mechanical": "Mechanical", "software": "Software",
               "procurement": "Procurement", "controller": "Headquarters", "research": "Headquarters", "concept": "Headquarters", "verifier": "Headquarters",
-              "importer": "Headquarters", "firmware": "Software", "test_planner": "Headquarters"}
+              "importer": "Headquarters", "firmware": "Software", "test_planner": "Headquarters", "simulation": "Simulation"}
 LABELS = {"page_note": "finding", "device_fact": "fact", "parameter": "limit", "component": "part", "net": "connection", "requirement": "requirement",
           "task": "task", "test": "test", "claim": "claim", "source": "source", "concept_draft": "concept", "finding": "review note", "need": "need",
           "part_proposal": "part", "assembly_plan": "assemblies", "design_proposal": "screen design", "order": "order", "price": "price", "datasheet": "PDF"}

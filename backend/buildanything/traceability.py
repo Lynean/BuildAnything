@@ -16,7 +16,7 @@ from . import memo, depgraph
 from .gateway import Gateway
 from .ledger import Actor, Ledger, LedgerError, ProjectState
 
-OWNERS = ("Mechanical", "Electrical", "Software", "Procurement")
+OWNERS = ("Mechanical", "Electrical", "Software", "Procurement", "Simulation")
 ACTOR = Actor.agent("controller")
 EARLY = re.compile(r"\bbefore\s+(?:\w+\s+){0,2}(?:purchas|buy|order|construct)", re.I)
 
@@ -28,7 +28,7 @@ class TraceError(LedgerError):
 class PlannedTest(BaseModel):
     covers: list[str] = Field(description="Keys of the requirements this test proves")
     title: str
-    owner: Literal["Mechanical", "Electrical", "Software", "Procurement"]
+    owner: Literal["Mechanical", "Electrical", "Software", "Procurement", "Simulation"]
     procedure: str = Field(description="The steps a person follows, in order")
     pass_if: str = Field(description="The exact condition for passing, in plain words")
     metric: str | None = Field(description="What is measured, if it's a number. Null for a yes-or-no test")
@@ -142,7 +142,7 @@ def _test_view(ledger: Ledger, test: dict[str, Any], results: dict[str, dict[str
         stale = sorted({graph.labels.get(n, n.split(":", 1)[-1]) for n in {*before, *now} if before.get(n) != now.get(n)})
     automatic = f.get("automatic", "none")
     state = "needs_approval" if test["status"] == "proposed" else ci.automatic_state(ledger, automatic) if automatic != "none" else "not_tested" if not result else "retest" if stale else result["outcome"]
-    return {"id": test["id"], **f, "stage": f.get("stage", "built"), "automatic": automatic, "status": test["status"], "state": state, "result": {k: v for k, v in result.items() if k != "snapshot"} if result else None, "staleBecause": stale, "relies": sorted(graph.labels[n] for n in nodes if not n.startswith("requirement:"))}
+    return {"id": test["id"], **f, "proposals": proposals(ledger).get(test["id"], []), "stage": f.get("stage", "built"), "automatic": automatic, "status": test["status"], "state": state, "result": {k: v for k, v in result.items() if k != "snapshot"} if result else None, "staleBecause": stale, "relies": sorted(graph.labels[n] for n in nodes if not n.startswith("requirement:"))}
 
 
 def deviations(ledger: Ledger) -> list[dict[str, Any]]:
@@ -231,6 +231,58 @@ def record_result(ledger: Ledger, test_id: str, value: float | None, outcome: st
     uses = _results(ledger)[1].get(test_id, f.get("uses", []))
     ledger.append(actor, "test.result", test=test_id, value=value, outcome=outcome, evidence=evidence.strip(), snapshot=graph.snapshot(graph.closure(uses, f["covers"], f["owner"])))
     return outcome
+
+
+def propose_result(ledger: Ledger, test_key: str, value: float | None, outcome: str, evidence: str, files: list[str], actor: Actor) -> str:
+    """An agent proposes a test's result from its work, such as a simulation run, with the result files. Only a person
+    records results, so it waits for them to accept it; the number is still judged against the limits by code."""
+    import uuid
+
+    test = next((t for t in ledger.state().of_type("test", "confirmed") if t["fields"].get("key", "").lower() == test_key.strip().lower()), None)
+    if test is None:
+        raise TraceError(f"There's no approved test {test_key}. Approved tests: {', '.join(t['fields'].get('key', '') for t in ledger.state().of_type('test', 'confirmed')) or 'none yet'}.")
+    if test["fields"].get("metric") and value is None:
+        raise TraceError(f"{test_key} is judged by its {test['fields']['metric']}: give the measured value.")
+    if not test["fields"].get("metric") and outcome not in ("passed", "failed"):
+        raise TraceError("Say whether it passed or failed.")
+    if len(evidence.strip()) < 8:
+        raise TraceError("Say how it was measured, so someone else could repeat it.")
+    root = ledger.root.resolve()
+    kept = []
+    for f in files:
+        rel = f.strip().replace("\\", "/")
+        target = (root / rel).resolve()
+        if rel and target.is_file() and root in target.parents:
+            kept.append(rel)
+    proposal = f"prop_{uuid.uuid4().hex[:10]}"
+    ledger.append(actor, "test.result_proposed", id=proposal, test=test["id"], value=value, outcome=outcome, evidence=evidence.strip()[:1500], files=kept[:20])
+    return proposal
+
+
+def proposals(ledger: Ledger) -> dict[str, list[dict[str, Any]]]:
+    """Results agents proposed that nobody has accepted or dismissed yet, by test ID."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    events = ledger.events()
+    closed = {e["data"]["id"] for e in events if e["kind"] in ("test.result_accepted", "test.result_dismissed")}
+    for e in events:
+        if e["kind"] == "test.result_proposed" and e["data"]["id"] not in closed:
+            out.setdefault(e["data"]["test"], []).append({**e["data"], "by": e["actor"]["name"], "at": e["at"]})
+    return out
+
+
+def accept_proposal(ledger: Ledger, proposal_id: str, actor: Actor) -> str:
+    """The person accepts a proposed result: it's recorded as theirs, with the agent's evidence and files."""
+    found = next((p for ps in proposals(ledger).values() for p in ps if p["id"] == proposal_id), None)
+    if found is None:
+        raise TraceError("That proposed result isn't waiting.")
+    evidence = found["evidence"] + (f" Files: {', '.join(found['files'])}." if found["files"] else "") + f" Proposed by {found['by']}."
+    outcome = record_result(ledger, found["test"], found["value"], found["outcome"], evidence, actor)
+    ledger.append(actor, "test.result_accepted", id=proposal_id)
+    return outcome
+
+
+def dismiss_proposal(ledger: Ledger, proposal_id: str, reason: str, actor: Actor) -> None:
+    ledger.append(actor, "test.result_dismissed", id=proposal_id, reason=reason.strip()[:600])
 
 
 def set_dependencies(ledger: Ledger, test_id: str, uses: list[str], actor: Actor) -> None:

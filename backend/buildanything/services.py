@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import connectors as conn
 from .connectors import clean_environment, detect_cli, CLI_TOOLS
 from .ledger import Actor, Ledger, LedgerError
 
@@ -70,7 +71,7 @@ def tool_proposals(app_ledger: Ledger) -> list[dict[str, Any]]:
 
 
 def load_custom(app_ledger: Ledger) -> None:
-    return  # tools added through proposals aren't connected to the app any more
+    """Programs and toolchains a person approved join the list Internal Service checks and installs from."""
     fresh = {p["entry"]["id"]: {**p["entry"], "custom": True} for p in tool_proposals(app_ledger) if p["status"] == "added"}
     _custom.clear()
     _custom.update(fresh)
@@ -108,10 +109,17 @@ def validate_tool(raw: dict[str, Any]) -> dict[str, Any]:
         get = {"pip": str(get_value)}
     elif get_kind == "key" and check_kind == "key" and re.match(r"^https://[^\s]{4,200}$", str(get_value)):
         get = {"key": check["secret"], "where": str(get_value)}
+    elif get_kind == "command" and isinstance(get_value, list) and 0 < len(get_value) <= 30 and all(isinstance(x, str) and 0 < len(x) < 300 for x in get_value):
+        first = get_value[0].strip()
+        if first.lower() in INSTALL_SHELLS or "/" in first or chr(92) in first:
+            raise ServiceError("A command install runs an installer program by name, such as sdkmanager or rustup, not a shell or a path.")
+        if not conn.which(first):
+            raise ServiceError(f"{first} isn't on this computer yet, so it can't run this install. Propose the tool that provides it first.")
+        get = {"command": [x.strip() for x in get_value]}
     elif get_kind == "steps" and isinstance(get_value, list) and 0 < len(get_value) <= 8:
         get = {"steps": [str(x).strip()[:300] for x in get_value if str(x).strip()]}
     else:
-        raise ServiceError("get_kind is winget (a winget id), pip (a package), key (an https page where the key is made; needs check_kind key), or steps (a list of instructions).")
+        raise ServiceError("get_kind is winget (a winget id), command (an installer that's already on this computer and its arguments, such as sdkmanager with the packages to add), pip (a package), key (an https page where the key is made; needs check_kind key), or steps (instructions for the person).")
     return {"id": tool_id, "group": group, "name": name, "what": what, "capabilities": caps, "check": check, "get": get}
 
 
@@ -128,6 +136,7 @@ def decide_tool(app_ledger: Ledger, tool_id: str, approve: bool, reason: str, ac
         raise ServiceError("That tool isn't waiting for approval.")
     app_ledger.append(actor, "service.tool_decided", id=tool_id, approved=bool(approve), reason=reason.strip())
     load_custom(app_ledger)
+INSTALL_SHELLS = {"cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "bash", "bash.exe", "sh", "wsl", "wsl.exe"}
 IMPORT_TO_PACKAGE = {"cv2": "opencv-python", "PIL": "Pillow", "sklearn": "scikit-learn", "yaml": "PyYAML", "serial": "pyserial", "skimage": "scikit-image", "Pynite": "PyNiteFEA",
                      "OCP": "cadquery-ocp", "dotenv": "python-dotenv", "bs4": "beautifulsoup4", "usb": "pyusb"}
 
@@ -168,7 +177,7 @@ def _cli(check: dict[str, Any]) -> dict[str, Any]:
     if tool in CLI_TOOLS:
         found = detect_cli(tool)
         return {"ready": found["found"], "version": found.get("version", ""), "detail": found["detail"]}
-    path = next((p for p in (shutil.which(e) for e in check.get("exe", [tool])) if p), None)
+    path = next((p for p in (conn.which(e) for e in check.get("exe", [tool])) if p), None)
     if not path:
         return {"ready": False, "detail": f"{tool} wasn't found on PATH."}
     try:
@@ -209,6 +218,8 @@ def _how(entry: dict[str, Any]) -> dict[str, Any]:
     g = entry["get"]
     if "winget" in g:
         return {"kind": "winget", "label": f"Install with winget ({g['winget']})", "id": g["winget"]}
+    if "command" in g:
+        return {"kind": "command", "label": "Install by running " + " ".join(g["command"]), "command": g["command"]}
     if "pip" in g:
         return {"kind": "pip", "label": f"Install {g['pip']} into the app's Python", "package": g["pip"]}
     if "key" in g:
@@ -339,6 +350,11 @@ def plan(service: str, project_root: Path | None, packages: list[str] | None) ->
         if not winget_exists(get["winget"]):
             raise ServiceError(f"winget couldn't find {get['winget']}, so nothing was installed. Install {entry['name']} from its own website.")
         return {"service": service, "title": f"Install {entry['name']} with winget", "steps": [[exe, "install", "--id", get["winget"], "-e", "--source", "winget", "--accept-source-agreements", "--accept-package-agreements", "--silent"]]}
+    if "command" in get:
+        exe = conn.which(get["command"][0])
+        if not exe:
+            raise ServiceError(f"{get['command'][0]} isn't on this computer, so {entry['name']} can't be installed this way yet. Install what provides it first.")
+        return {"service": service, "title": f"Install {entry['name']} with {get['command'][0]}", "steps": [[exe, *get["command"][1:]]]}
     raise ServiceError(f"{entry['name']} can't be installed automatically. Follow its steps instead.")
 
 

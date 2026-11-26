@@ -97,6 +97,7 @@ GATE_REVIEW = True
 _proposing = threading.Lock()  # An agent can call tools in parallel, which could otherwise add one part twice.
 CLONE_STAGGER_S = 3  # The first clone goes slightly early, so the others find its context already saved at the cheaper rate.
 PARALLEL = "Other jobs in your department are running at the same time. Stay within your items. look_up_project shows the current state and what the others are doing. If you need anything outside your items, report BLOCKED."
+SIM_DEVICE = "simulation"  # the Simulation department's own program, in firmware/simulation/
 MAX_CODE_WRITES = 4  # per Lead reply: the first pass plus up to three to finish what it left
 MAX_DRIVES = 6  # Per department and gate, so an agent that can't finish can never spend without limit.
 ROUTINE = {"QUESTION": ("Fast", 8), "CHANGE_NOTICE": ("Fast", 8)}  # Answering a question or acknowledging a change is routine: cheaper tier, fewer turns.
@@ -128,7 +129,11 @@ def _owned_work(ledger: Ledger, state: ProjectState, gate: str) -> dict[str, lis
 
     out: dict[str, list[str]] = {}
     team = shape.team(state)
-    for owner, text in gatereport.blockers(gate, state, ledger):
+    try:
+        planning = gates.phase(state, gate) == "G2"  # in Plan, only the work behind the person's own items, never Build work
+    except gates.GateError:
+        planning = False
+    for owner, text in [] if planning else gatereport.blockers(gate, state, ledger):
         if owner in team:
             out.setdefault(owner, []).append(text)
     # A requirement the person confirms has to be made true first, by the department whose tasks it matches.
@@ -138,7 +143,7 @@ def _owned_work(ledger: Ledger, state: ProjectState, gate: str) -> dict[str, lis
             if owner:
                 out.setdefault(owner, []).append(f"Make this work and show how you checked it, so the person can confirm it: {criterion['text']}")
     events = ledger.events()
-    for department in team:
+    for department in [] if planning else team:
         for what in own_remaining(events, department):
             if what not in out.get(department, []):
                 out.setdefault(department, []).append(what)
@@ -154,8 +159,10 @@ def _stalled(events: list[dict[str, Any]], department: str) -> bool:
 def _drive(ledger: Ledger, state: ProjectState, done: set[str], busy: set[str] | None = None) -> str | None:
     """Gives each department what the gate needs from it. It runs again only when the facts have changed."""
     gate = gates.current_gate(state)
-    if gate is None or gates.phase(state, gate) in ("G0", "G1", "G2"):
+    if gate is None or gates.phase(state, gate) in ("G0", "G1"):
         return None
+    if gates.phase(state, gate) == "G2" and (state.of_type("requirement", "proposed") or state.of_type("task", "proposed") or not state.of_type("task", "confirmed")):
+        return None  # in Plan, only once the plan itself is agreed
     events = ledger.events()
     waiting_on_person = {r["from"] for r in requests_view(events) if r["status"] == "waiting_for_you"}
     for department, items in _owned_work(ledger, state, gate).items():
@@ -208,6 +215,10 @@ def next_action(ledger: Ledger, running: set[str] | None = None, busy: set[str] 
     for asked in [e for e in events if e["kind"] == "command.person" and e["data"]["type"] == "RECHECK"]:
         if f"recheck:{asked['id']}" not in done and asked["data"].get("department") not in busy:
             return f"recheck:{asked['id']}"
+    for brief in tab_briefs(ledger, state):  # a tab on this project reads files a department hasn't made yet
+        step = f"tab_brief:{brief['tab']}:{brief['version']}:{brief['department']}"
+        if step not in done and brief["department"] not in busy:
+            return step
     if not _past_concept(ledger, state):
         drafts = state.of_type("concept_draft")
         return "concept" if not drafts or "summary" not in drafts[-1]["fields"] else None
@@ -337,8 +348,20 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
     decided = {e["data"].get("device") for e in events if e["kind"] == "software.autotest"}
     for device in firmware.devices(ledger.root):
         if device not in decided and firmware.is_computer(ledger.root, device) and any(not f.get("generated") for f in firmware.scan_workspace(ledger.root, device)):
-            out.append({"kind": "autotest", "device": device, "text": f"Let the app run the {device} program's tests after each Software write? Then Software sees failures and fixes them itself, instead of you running the tests. It installs requirements.txt into this project's Python environment. Tick 'Run tests after each agent write' on the Software screen.", "goto": "Software"})
+            if device == SIM_DEVICE:
+                out.append({"kind": "autotest", "device": device, "text": "Let the app run the simulation's code? Then Simulation runs its simulations itself and saves the results, instead of you running them. It installs the simulation's requirements.txt into this project's Python environment. Tick 'Run code and tests' on the Simulation screen.", "goto": "Simulation"})
+            else:
+                out.append({"kind": "autotest", "device": device, "text": f"Let the app run the {device} program's code, builds and tests? Then Software builds and tests after each write and fixes what fails, instead of you running them. Python packages go into this project's environment; build tools run as they are on this computer. Tick 'Run code and tests' on the Software screen.", "goto": "Software"})
             break
+    app_root = ledger.root.parent / "_app"
+    if app_root.is_dir() and concept_approved(ledger):
+        from . import tabideas
+
+        ideas = tabideas.candidates(app_root, Ledger(app_root), ledger.root, shape.team(state))
+        if ideas:
+            idea = ideas[0]
+            more = f" {len(ideas) - 1} more tab ideas: {', '.join(i['tool'] for i in ideas[1:4])}." if len(ideas) > 1 else ""
+            out.append({"kind": "tab_idea", "key": idea["key"], "text": f"Make a tab in {idea['department']} for {idea['tool']}? It could show {idea['could_show']}. Ask {idea['service']}.{more}", "goto": idea["service"]})
     current = gates.current_gate(state)
     if current and next_action(ledger) is None:
         from . import gatereport
@@ -614,6 +637,14 @@ def _own_state(ledger: Ledger, department: str, services: Services) -> dict[str,
         return {"components": [{"id": c["id"], "part": c["fields"]["part_number"], "role": c["fields"].get("role"), "status": c["status"], "datasheet": c["id"] in sheets} for c in state.of_type("component") if c["status"] != "rejected"], "nets": len(_active(state, "net")), "failed_checks": [c for c in compat.run_checks(state) if c.get("status") == "fail"][:10], "packets": interfaces.summary_for_agents(state), "needed_items": designneeds.view(ledger), "agreed_pins": firmware.pin_defines(state)}
     if department == "Mechanical":
         return {"no_mechanical_work": designneeds.declared_none(ledger, "Mechanical"), "parts": [p["fields"] for p in _active(state, "part")], "suggested_parts": [p["fields"] for p in state.of_type("part_proposal", "proposed")]}
+    if department == "Simulation":
+        events = ledger.events()
+        runs = [{"script": e["data"]["script"], "args": e["data"]["args"], "ok": e["data"]["ok"], "made": e["data"].get("made", [])[:12], "at": e["at"]} for e in events if e["kind"] == "software.ran" and e["data"].get("device") == SIM_DEVICE][-8:]
+        tests = [{"key": t["fields"].get("key"), "title": t["fields"].get("title"), "covers": t["fields"].get("covers"), "pass_if": t["fields"].get("pass_if"), "metric": t["fields"].get("metric"), "unit": t["fields"].get("unit"), "min": t["fields"].get("min"), "max": t["fields"].get("max"), "owner": t["fields"].get("owner")} for t in state.of_type("test", "confirmed")]
+        return {"simulation_code": [f["path"] for f in firmware.scan_workspace(ledger.root, SIM_DEVICE) if not f.get("generated")] if (ledger.root / "firmware" / SIM_DEVICE).is_dir() else [],
+                "product_code": {d: [f["path"] for f in firmware.scan_workspace(ledger.root, d) if not f.get("generated")] for d in firmware.devices(ledger.root) if d != SIM_DEVICE},
+                "cad_model_files": _cad_files(ledger), "recent_runs": runs, "tests": tests,
+                "can_run": software.autotest_allowed(ledger, SIM_DEVICE), "results_folder": "simulation/results/"}
     if department == "Software":
         return {"cad_model_files": _cad_files(ledger), "devices": {d: {"kind": "computer" if firmware.is_computer(ledger.root, d) else "board", "files": [f["path"] for f in firmware.scan_workspace(ledger.root, d) if not f.get("generated")]} for d in firmware.devices(ledger.root)}, "packets": interfaces.summary_for_agents(state), "designs": [d["fields"]["title"] for d in state.of_type("design_proposal")]}
     return {"budget_currency": designneeds.currency(ledger), "buying_list": designneeds.to_buy(state, mechanical.current_parts(state)), "priced": list(designneeds.prices(state)), "orders": procurement.orders_view(state)["orders"][:30], "components": [{"part": c["fields"]["part_number"], "role": c["fields"].get("role")} for c in state.of_type("component") if c["status"] != "rejected"], "parts": [p["fields"] for p in _active(state, "part")]}
@@ -838,6 +869,8 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
             name = device.strip().lower()
             if not re.fullmatch(r"[a-z0-9-]{1,40}", name):
                 return {"error": "Device names use lowercase letters, numbers and hyphens."}
+            if name == SIM_DEVICE:
+                return {"error": "firmware/simulation/ is the Simulation department's code. Write the product's code for its own device or computer."}
             if board.strip():
                 return await firmware.generate(ledger, gateway, root, name, board.strip(), goal, scope="app")
             return await software.generate(ledger, gateway, root, name, goal)
@@ -859,7 +892,46 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
             """Run the free automatic check of the message definitions again and see its result. It changes nothing. Use it to retry the check, because define_packet always saves a new version."""
             return await ci.check_messages(ledger)
 
-        tools += [define_packet, check_messages, write_code, propose_design, software.search_open_source]
+        def run_command(device: str, command: list[str]) -> dict[str, Any]:
+            """Run a build, code-generation or test command for one of your programs, from its folder in firmware/<device>/: the program and its arguments, such as ["gradlew.bat", "assembleDebug"], ["npm", "run", "build"] or ["generate_icons.py"]. It returns the output and the files it made. It must finish by itself, with no window. Only works once the person let the app run this program's code."""
+            name = device.strip().lower()
+            if name == SIM_DEVICE:
+                return {"error": "firmware/simulation/ is the Simulation department's program."}
+            try:
+                return software.run_command(ledger, root, name, list(command or []), Actor.agent("software"))
+            except software.SoftwareError as exc:
+                return {"error": str(exc)}
+
+        tools += [define_packet, check_messages, write_code, run_command, propose_design, software.search_open_source, WebSearchTool()]
+    elif department == "Simulation":
+        sim_writes = {"count": 0}
+
+        async def write_sim_code(goal: str) -> dict[str, Any]:
+            """Write or change the simulation code, in firmware/simulation/. goal says what the simulation must do: which model and code it loads (by their paths), the scenario, what it measures, and where it saves results (simulation/results/<run name>/). Put everything in the first goal; call again only to finish what it says is not done."""
+            sim_writes["count"] += 1
+            if sim_writes["count"] > MAX_CODE_WRITES:
+                return {"error": f"That's {MAX_CODE_WRITES} code writes in this reply. Report what's left as PARTIAL."}
+            context = ("This is the Simulation department's code, not the product's. It builds and runs a simulation from the other departments' deliverables and leaves them unchanged: "
+                       "load model files from mechanics/ and import the product's code from the other folders in firmware/ by adding them to the import path. "
+                       "Save every result under the project's simulation/results/<run name>/ (two folders up from here: ../../simulation/results/), as CSV or JSON data, PNG plots and screenshots, and GIF or MP4 recordings. "
+                       "Every script must run to the end by itself with no window, and print a short summary of what it measured.\n\n")
+            return await software.generate(ledger, gateway, root, SIM_DEVICE, context + goal)
+
+        def run_simulation(command: list[str]) -> dict[str, Any]:
+            """Run a simulation command from firmware/simulation/: one of its scripts with arguments, such as ["run_handover.py", "--runs", "20"], or a simulator on this computer, such as ["ngspice", "-b", "circuit.cir"]. It returns the output and the files it made or changed. It must finish by itself, with no window. Only works once the person let the app run the simulation's code."""
+            try:
+                return software.run_command(ledger, root, SIM_DEVICE, list(command or []), Actor.agent("simulation"))
+            except software.SoftwareError as exc:
+                return {"error": str(exc)}
+
+        def propose_test_result(test_key: str, value: float | None, outcome: str, evidence: str, files: list[str]) -> dict[str, Any]:
+            """Propose a test's result from a simulation run, for the person to accept. test_key is the test's key, such as T4. value is the measured number when the test has a metric (the app judges it against the limits), otherwise outcome is passed or failed. evidence says how it was measured, so someone could repeat it, and files lists the result files (paths in the project)."""
+            try:
+                return {"id": traceability.propose_result(ledger, test_key, value, outcome, evidence, files, Actor.agent("simulation")), "status": "It waits on the Tests screen for the person to accept."}
+            except traceability.TraceError as exc:
+                return {"error": str(exc)}
+
+        tools += [write_sim_code, run_simulation, propose_test_result, WebSearchTool()]
     else:
         async def set_price(item: str, pack_price: float, pack_size: int, needed: int, currency: str, supplier: str, url: str) -> dict[str, str]:
             """Record a real price and supplier. item must be a buying-list name exactly as written in department_state. pack_price is what one listing costs, in the shop's own three-letter currency. pack_size is how much comes in that listing: 1 for a single servo, 200 for a reel of 200, 10 for a 10 m roll. needed is how much this project uses, in the same unit. Code works out how many packs to buy and converts the currency, so never do either yourself."""
@@ -1013,6 +1085,8 @@ async def talk_to_department(ledger: Ledger, gateway: Gateway, department: str, 
     if not message.strip():
         raise HeadquartersError("Type a message.")
     _say(ledger, department, "you", message.strip())
+    if department in jobs.busy(ledger):
+        _say(ledger, department, "request", f"{department} is finishing another job. Your message is next, and it'll answer as soon as that's done.", "Headquarters")
     return await run_lead(ledger, gateway, department, message.strip(), services, attachments=attachments)
 
 
@@ -1197,6 +1271,18 @@ async def run_step(ledger: Ledger, gateway: Gateway, action: str, services: Serv
                 await run_clones(ledger, gateway, department, groups, services, kind, done_when, heading)
             else:
                 await run_lead(ledger, gateway, department, text, services, sent=protocol.command(kind, items, done_when))
+    elif action.startswith("tab_brief:"):
+        _, tab_id, version, department = action.split(":")
+        brief = next((b for b in tab_briefs(ledger, state) if b["tab"] == tab_id and b["version"] == version and b["department"] == department), None)
+        if brief:
+            brief = {**brief, "version": version}
+            lines = "\n".join(f"- {r['path']}: {r['what'] or 'see the tab'} ({'none yet' if not r['found'] else str(r['found']) + ' found'})" for r in brief["reads"])
+            text = (f"The {brief['title']} tab now shows on the {brief['shown_in']} screen. {brief['summary']}\n"
+                    f"It reads these files, which your department makes:\n{lines}\n"
+                    "Make the missing ones from your current work and save them at exactly these paths, so the tab shows real results. "
+                    "If your work already produces them somewhere else, save or copy them to these paths too. If a program makes them, run it with run_program (when you have it) and check they appeared. If you need a tool you don't have, ask Reception with request_tool.")
+            _say(ledger, department, "request", text, "Reception")
+            await run_lead(ledger, gateway, department, text, services, sent=protocol.command("TASK", [f"{r['path']}: {r['what']}" for r in brief["reads"]], "Every file the tab reads exists at its path."))
     elif action.startswith("open:"):
         # Departments open in order and read each other's proposals, so they don't need to ask.
         await run_lead(ledger, gateway, action[5:], "", services, nested=True)
@@ -1211,6 +1297,8 @@ def label_for(action: str) -> str:
         return "The reviewer is checking a change"
     if action.startswith("brief_change:"):
         return f"{action.split(':')[2]} is responding to an approved change"
+    if action.startswith("tab_brief:"):
+        return f"{action.split(':')[3]} is making the files a tool tab shows"
     if action.startswith("deliver:"):
         return "Passing on your answer"
     if action == "ci":
@@ -1227,6 +1315,17 @@ def label_for(action: str) -> str:
     return f"{action[5:]} is preparing its first proposal" if action.startswith("open:") else LABELS[action]
 
 
+def tab_briefs(ledger: Ledger, state: ProjectState) -> list[dict[str, Any]]:
+    """Approved tool tabs on this project whose files a team department still has to make."""
+    app_root = ledger.root.parent / "_app"
+    if not app_root.is_dir() or not concept_approved(ledger):
+        return []
+    from . import tabs
+
+    allowed_runs = sum(1 for e in ledger.events() if e["kind"] == "software.autotest" and e["data"].get("allowed"))
+    return [{**b, "version": f"{b['version']}-{allowed_runs}"} for b in tabs.briefs_due(app_root, Ledger(app_root), ledger.root, shape.team(state))]
+
+
 def department_of(ledger: Ledger, action: str) -> str | None:
     """The department a step belongs to, if it's a department's own work. Those can run side by side."""
     if action.startswith("open:"):
@@ -1235,6 +1334,8 @@ def department_of(ledger: Ledger, action: str) -> str | None:
         return action.split(":")[2]
     if action.startswith("brief_change:"):
         return action.split(":")[2]
+    if action.startswith("tab_brief:"):
+        return action.split(":")[3]
     if action.startswith(("deliver:", "relay:", "recheck:")):
         events = ledger.events()
         if action.startswith("deliver:"):

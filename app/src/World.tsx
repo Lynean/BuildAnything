@@ -21,6 +21,7 @@ export const PLACES: Place[] = [
   { screen: "Electrical", label: "Electrical", blurb: "Components and wiring", x: 1000, y: 420, color: "#f2c94c", dept: "Electrical", icon: "M13 2 4 14h7l-1 8 9-12h-7z" },
   { screen: "Software", label: "Software", blurb: "Code for every device", x: 880, y: 620, color: "#5aa9ff", dept: "Software", icon: "M8.6 16.6 4 12l4.6-4.6L10 8.8 6.8 12l3.2 3.2zm6.8 0L20 12l-4.6-4.6L14 8.8l3.2 3.2-3.2 3.2z" },
   { screen: "Procurement", label: "Procurement", blurb: "Prices and orders", x: 1220, y: 250, color: "#6fd08c", dept: "Procurement", icon: "M7 18a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm10 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM5.2 4l.9 2H21l-3.6 7H8.1l-.9 1.6V16h12v2H5v-3l1.4-2.6L3 4H1V2h3.4z" },
+  { screen: "Simulation", label: "Simulation", blurb: "Runs the design and code, and proves they work", x: 1180, y: 640, color: "#3fb6d9", dept: "Simulation", icon: "M3 3h18v14H3zm2 2v10h14V5zm2 8 3-4 2 2.5L15 7l2 6zM8 19h8v2H8z" },
   { screen: "Interface", label: "Interface", blurb: "What the departments agree on", x: 0, y: 0, area: true, color: "#c08bff", icon: "M4 15h16v2H4zm1-2c0-3.9 3.1-7 7-7s7 3.1 7 7h-2a5 5 0 0 0-10 0zM2 17h2v4H2zm18 0h2v4h-2z" },
   { screen: "Tests", label: "Tester", blurb: "Prove each requirement", x: 1440, y: 770, color: "#ff6f91", icon: "M9 2h6v2h-1v5.2l5.4 9.4A2 2 0 0 1 17.7 22H6.3a2 2 0 0 1-1.7-3.4L10 9.2V4H9zm-.9 13h7.8l-2.3-4H10.4z" },
 ];
@@ -35,6 +36,7 @@ const EDGES: { from: string; to: string; label: string }[] = [
   { from: "Headquarters", to: "Electrical", label: "Assigns work" },
   { from: "Headquarters", to: "Software", label: "Assigns work" },
   { from: "Headquarters", to: "Procurement", label: "Assigns work" },
+  { from: "Headquarters", to: "Simulation", label: "Assigns work" },
   { from: "Headquarters", to: "Tests", label: "Test plan" },
   { from: "External Service", to: "Mechanical", label: "Skills and connections" },
   { from: "External Service", to: "Electrical", label: "Skills and connections" },
@@ -45,6 +47,10 @@ const EDGES: { from: string; to: string; label: string }[] = [
   { from: "Electrical", to: "Software", label: "Drivers" },
   { from: "Mechanical", to: "Software", label: "CAD model" },
   { from: "Software", to: "Tests", label: "Automatic checks" },
+  { from: "Software", to: "Simulation", label: "Code to run" },
+  { from: "Mechanical", to: "Simulation", label: "Model to simulate" },
+  { from: "Simulation", to: "Tests", label: "Results" },
+  { from: "Internal Service", to: "Simulation", label: "Python environment" },
 ];
 const JOURNEY_Y = 70, JOURNEY_X0 = 80, JOURNEY_W = 1440;
 const R = 30;  // node radius on the canvas

@@ -17,7 +17,7 @@ import World, { placeOf } from "./World";
 import Explorer, { FileView } from "./Explorer";
 import { watchExpandable } from "./expandable";
 
-const SCREENS = ["Headquarters", "Journey", "Team", "Tests", "Sources", "Mechanical", "Electrical", "Software", "Interface", "Procurement", "External Service", "Internal Service", "Platform", "Agents", "Review queue", "Import project"] as const;
+const SCREENS = ["Headquarters", "Journey", "Team", "Tests", "Sources", "Mechanical", "Electrical", "Software", "Simulation", "Interface", "Procurement", "External Service", "Internal Service", "Platform", "Agents", "Review queue", "Import project"] as const;
 // Screens that were merged into others, so old links still land somewhere sensible.
 const MOVED: Record<string, string> = { Changes: "Review queue", Gates: "Journey", Tasks: "Headquarters", "Project Network": "Team", Connectors: "External Service" };
 type Screen = (typeof SCREENS)[number];
@@ -87,6 +87,8 @@ export default function App() {
   const [interfaceSection] = useState<Section>("Data packets");
   const [explorer, setExplorer] = useState(false);
   const [file, setFile] = useState("");
+  // Any screen can open a project file in the viewer: window.dispatchEvent(new CustomEvent("ba:open-file", { detail: "path/in/project" })).
+  useEffect(() => { const onOpen = (e: Event) => { setExplorer(true); setFile((e as CustomEvent<string>).detail); }; window.addEventListener("ba:open-file", onOpen); return () => window.removeEventListener("ba:open-file", onOpen); }, []);
   const [waiting, setWaiting] = useState(0);
   const [projectName, setProjectName] = useState("");
   const [projectId, setProjectId] = useState(currentProject);
@@ -101,7 +103,7 @@ export default function App() {
   useEffect(() => {
     const check = (e: Event) => {
       const id = (e as CustomEvent<string>).detail;
-      const dept = screen && ["Mechanical", "Electrical", "Software", "Procurement"].includes(screen) ? screen : null;
+      const dept = screen && ["Mechanical", "Electrical", "Software", "Procurement", "Simulation"].includes(screen) ? screen : null;
       setFile("");
       if (!dept) return;
       call<{ team: string[] }>(`/projects/${id}/shape`).then((r) => { if (!r.team.includes(dept)) open(null); }).catch(() => open(null));
@@ -119,6 +121,7 @@ export default function App() {
     Mechanical: <MechanicalLive />,
     Electrical: <ElectricalLive />,
     Software: <Workspace onOpenTroubleshooting={() => open("Electrical")} />,
+    Simulation: <Workspace department="Simulation" onOpenTroubleshooting={() => open("Electrical")} />,
     Interface: <Interfaces initial={interfaceSection} />,
     Procurement: <ProcurementLive />,
     "External Service": <ServicesScreen side="external" />,

@@ -63,7 +63,7 @@ class Actor:
 
 # Only a person can make these changes. No agent credential can write them.
 HUMAN_ONLY = {
-    "gate.approved", "record.confirmed", "record.rejected", "limit.changed",
+    "gate.approved", "record.confirmed", "record.rejected", "limit.changed", "test.result_accepted", "test.result_dismissed",
     "connector.saved", "connector.removed", "connector.approved", "autonomy.changed",
     "debug.measurement", "check.closed", "budget.set", "release.created", "gate.imported", "finding.decided", "command.person", "compat.accepted", "requirement.clarified", "component.owned", "component.variant", "component.no_datasheet", "component.doc_missing", "assumption.checked", "bench.accepted", "bench.screen", "need.waived", "needs.none", "deviation.closed", "order.arrived", "test.result", "test.dependencies", "change.approved", "change.rejected", "change.reopened", "request.person_answered", "task.done", "software.tests", "software.autotest", "sim.code_allowed", "cad.trials_allowed", "scope.set", "flash.approved", "flash.restored", "concept.approved", "project.updated", "hq.retry", "research.waived", "packet.acked", "packet.removed", "link.answer", "link.routed", "link.closed", "software.step", "cad.kept", "cad.rolled_back", "cad.contact_allowed", "cad.synced", "cad.drawing", "shape.set", "shape.request_declined", "gate.criterion_met", "platform.converter_decided", "service.install_approved", "service.install_rejected", "service.ask_closed", "service.tool_decided", "skill.decided", "handoff.reported", "skills.auto_set", "tab.decided", "tabs.scripts_allowed", "tab.shown", "conn.decided", "conn.key_set", "conn.write_decided", "conn.removed",
 }

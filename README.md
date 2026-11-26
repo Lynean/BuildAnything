@@ -2,7 +2,7 @@
 
 **An AI team that takes a hardware or software project from an idea to a proven device, with you approving every step that matters.**
 
-You describe what you want to build. Headquarters proposes only the departments and gates the project needs (Mechanical, Electrical, Software, Procurement), and each department's lead agent does the work: parts, circuits, firmware, prices, tests. Everything they do goes into one record, the Ledger. Agents propose; you decide. Nothing is approved, installed, flashed, bought or changed in your design without you.
+You describe what you want to build. Headquarters proposes only the departments and gates the project needs (Mechanical, Electrical, Software, Simulation, Procurement), and each department's lead agent does the work: parts, circuits, code, simulations, prices, tests. No tool is built in: the team works with whatever you use, from Fusion or SolidWorks to Blender, Roblox, an Android phone or nothing at all. Everything they do goes into one record, the Ledger. Agents propose; you decide. Nothing is approved, installed, flashed, bought or changed in your design without you.
 
 <p align="center">
   <img src="docs/images/live-work.gif" alt="The home canvas showing agents at work: turning rings on busy nodes, a status bar, and a bubble with one agent's live reasoning" width="900">
@@ -28,10 +28,22 @@ You describe what you want to build. Headquarters proposes only the departments 
 Headquarters runs the departments in parallel: while Mechanical works, it can start Software's job, and it waits only when there's nothing else to start. A department never runs two jobs at once. A request that arrives while it's busy waits its turn, so two jobs can't write over each other's work.
 
 - **It doesn't stall.** For each stage, Headquarters drives the work behind every item you'll confirm, plus whatever a department said it still has to do itself. Your answers to a department's questions go back to it as a go-ahead to carry on. It stops and tells you after two rounds in a row that finish nothing.
-- **Code is checked by running it.** Software's code writer changes files with precise edits, like a patch, across several files at once. After every write the app imports the program in a fresh Python, and if you allow it, runs the program's tests in the project's own environment. Failures go straight back to the agent to fix.
+- **Code in any language, checked by running it.** Software writes each program in the language its platform needs (Kotlin and Gradle for an Android app, Swift, C#, Lua, Python, TypeScript and so on), changing files with precise edits, like a patch, across several files at once. For each program it records a build command; once you allow it, the app runs that build and the tests after every write, and failures go straight back to the agent to fix. Python programs are also import-checked in a fresh Python.
 - **Proposals come in batches.** Mechanical proposes all its parts in one go, and Electrical all its components. You can add them all with one click.
 - **Every file counts.** Departments see everything in the project folder, including files you add yourself, such as a URDF exported from your CAD program.
 - **Missing a tool?** A department asks Reception. External Service asks what you already have, looks for an established add-in or converter before writing anything new, guides you through setting it up, then writes a Skill so it's reused.
+
+### Each department is defined by what it delivers
+
+| Department | What it hands over |
+|---|---|
+| Mechanical | The physical design: CAD model, parts, assemblies, exports |
+| Electrical | The circuit: components, connections, power, low-level drivers |
+| Software | The product's own code, in any language, with its tests |
+| **Simulation** | **Evidence that the design works before it's built:** runs and results judged against the requirements |
+| Procurement | The buying list, prices and orders |
+
+**Simulation** builds each simulation from the other departments' deliverables and uses them unchanged: Mechanical's model, Software's code, Electrical's circuit. It chooses the kind of simulation the requirement needs (physics, circuit, structural, thermal, anything else), runs it itself once you allow it, and saves results (data, plots, screenshots, recordings) where departments and tabs can show them. When a run measures what a test asks for, it proposes the result with its files on the **Tests** screen; you accept it, and the app judges the number against the limits. When a run fails, it tells the owning department with the numbers; it never patches their work. Headquarters adds Simulation only to projects that need it.
 
 ### Change the plan by asking
 
@@ -59,7 +71,11 @@ Headquarters shows the same conversation, compact, under **Between departments**
 
 ### Tool tabs: any tool, in the department that uses it
 
-Service agents can write a **tool tab**: a TSX tab in a department's screen that shows one tool's results for the open project. Guided by the built-in Tab-creator and Card-creator Skills, they can make a tab for any tool: CAD, physics simulation, PCB rule checks, MATLAB, data and plots. The app compiles each tab and runs it in a sealed frame with no network access and no access to the app's buttons. An optional data script runs in a sandbox, only if you switch tab scripts on. You approve each tab and choose which projects show it.
+Service agents can write a **tool tab**: a TSX tab in a department's screen that shows one tool's results for the open project. Guided by the built-in Tab-creator and Card-creator Skills, they can make a tab for any tool: CAD, physics simulation, PCB rule checks, MATLAB, data and plots. The app compiles each tab and runs it in a sealed frame with no network access and no access to the app's buttons. An optional data script runs in a sandbox, in the project's own Python environment, only if you switch tab scripts on. You approve each tab and choose which projects show it.
+
+- **Where a tab goes:** by what each department delivers. Live runs and inspecting a simulation go in Simulation; the static results that bear on a department's own design (its plots, screenshots, data) go in that department; a tool that does both gets one in each.
+- **Built against the real project:** each tab declares the files it reads and which department makes them. Once it's shown, Headquarters tells that department to make any that are missing, at exactly those paths.
+- **Suggested, not imposed:** the app spots where a tab would help (connections with visual or debugging output, result files the programs saved) and the Service agents offer one. **Not needed** stops the suggestion.
 
 | MuJoCo tab (replays the recorded run) | Fusion tab (exports in 3D, scripts to run) |
 |---|---|
@@ -93,7 +109,7 @@ External Service connects the app to outside services, such as Altium 365 throug
 ### Reception: Skills, tool tabs, project environments
 
 - **External Service** writes **Skills**: guides for programs you operate yourself, such as Altium, researched from official sources, checked by the app and an independent reviewer, and approved by you. It also keeps your AI provider settings.
-- **Internal Service** looks after each project's own Python environment (it proposes installs; you approve them) and the app's file viewers. The same environment runs the program's tests after each Software write.
+- **Internal Service** looks after what the project's code needs on this computer: each project's own Python environment, and the programs and toolchains it builds and runs with (compilers, SDKs, build tools). It finds the official installer (winget, or an installer that's already here such as an SDK manager), you approve the definition and then each install, and the program is found straight away, without restarting the app.
 - **Tool tabs** are reviewed, previewed, approved and shown per project here, with one switch for data scripts.
 
 ![Tool tabs at Reception](docs/images/reception-tool-tabs.png)
@@ -119,7 +135,11 @@ flowchart LR
   HQ --> EE[Electrical]
   HQ --> SW[Software]
   HQ --> PR[Procurement]
-  ME & EE & SW & PR -->|every event| L[(The Ledger)]
+  HQ --> SIM[Simulation]
+  ME -->|model| SIM
+  SW -->|code| SIM
+  SIM -->|results| T[Tester]
+  ME & EE & SW & PR & SIM -->|every event| L[(The Ledger)]
   HQ --> L
   subgraph Reception
     EX[External Service]
@@ -151,7 +171,7 @@ sequenceDiagram
   A->>S: send the change
 ```
 
-**Stack:** a React 18 + Vite app (`app/`), a FastAPI backend (`backend/`) running the agents through the OpenAI Agents SDK, with fastmcp for MCP and esbuild for tool tabs. Simulators such as MuJoCo are used by the programs the agents write, installed in each project's own environment. All data stays in local folders, and the servers listen on this computer only (127.0.0.1).
+**Stack:** a React 18 + Vite app (`app/`), a FastAPI backend (`backend/`) running the agents through the OpenAI Agents SDK, with fastmcp for MCP and esbuild for tool tabs. Simulators, SDKs and build tools are whatever each project needs, installed into its own environment or onto the computer with your approval; none is part of the app. All data stays in local folders, and the servers listen on this computer only (127.0.0.1).
 
 ---
 
@@ -179,6 +199,10 @@ cd ..
 
 ### 2. Start it
 
+**The easy way:** double-click **`start.bat`** (Windows), or run `./start.sh` (Git Bash, macOS or Linux). On the first run it sets up the backend and installs the app's packages; every time, it rebuilds the app, starts both servers and opens the browser. Close the two windows it opens (or press Ctrl+C for `start.sh`) to stop it.
+
+**By hand:**
+
 ```bash
 # Terminal 1: the backend, on this computer only
 cd backend
@@ -202,7 +226,7 @@ Open **External Service** → **AI providers and model tiers** and paste your pr
 3. Headquarters proposes the **team** (departments) and the **gates** (what must be true before moving on). Change them if you like, then approve.
 4. Open a department to talk to its lead. Its tabs group the work: **Lead** (the chat), the department's own tabs, any **tool tabs**, and **Capability** (its Skills, services and hand-offs).
 5. Approve or reject what agents propose in **You** (the review queue), and tick gate criteria when they're met.
-6. When Software first writes a program, **Needs you** asks whether the app may run its tests after each write. Say yes (on the Software screen) and Software fixes failing tests itself instead of you running them.
+6. When Software or Simulation first writes a program, **Needs you** asks whether the app may run its code. Tick **Run code and tests** on that screen, and the department builds, tests and runs it itself, fixing what fails, instead of you running it.
 7. To change the plan later, tell Headquarters' chat. The change waits on the **Changes** screen for your approval.
 
 ### 5. Watch the team work
@@ -219,6 +243,7 @@ Open **External Service** → **AI providers and model tiers** and paste your pr
 | A program you operate yourself (Altium Designer, Fusion) | External Service: "write an Altium Skill for Electrical" | A verified guide for that department. The agent hands you scripts to run and you report back on **Capability**. |
 | A tool's results inside a department | External or Internal Service: "make a MuJoCo tab for Mechanical" | It builds and checks a tab. Approve it at **Tool tabs**, choose the project, and switch on data scripts if it has one. |
 | Python packages for a project | Internal Service: "install what the laptop code needs" | It proposes the packages; nothing installs until you approve. |
+| A compiler, SDK or build tool | Internal Service: "set up what the Android app needs to build" | It checks what's installed, proposes each missing program with its official installer, and installs it once you approve. |
 
 ### 7. Run the tests
 
@@ -243,9 +268,11 @@ Everything below was built and verified in this repository's latest work, in the
 | Connections | Approve, save key, **Test** ("who_am_i answered (200)"); an agent read data; a change waited for **Allow and send**, then went through (201); a tab read live data. The keys stayed in the keyring and were never written to the record. |
 | Person-only actions | The tests caught, and fixed, a case where an agent's refused attempt to save a key still reached the keyring. Approving, keys, disconnecting and allowing changes are now checked before anything happens. |
 | A full project run (RUA assistant arm) | A review run, with the reviewer acting only as the owner: the agents loaded the real 6-joint arm in MuJoCo from its URDF with all 82 meshes, reached commanded poses with 0° error, built a handover controller whose simulation tests prove the slow approach and the 10 cm stop, and wired it into a desktop app, with 91 tests passing. The pain points it found were fixed afterwards. |
-| Backend tests | **736 passing** (`pytest`), including tool tabs, connections (against a local stand-in service, client-credentials sign-in and an MCP server), agent trails, parallel Headquarters and the code writer's checks. |
+| A project in another language (phone air mouse) | A review run planned an Android-to-Windows air mouse: 13 requirements, all for Software, with Bluetooth serial and a replay check. It stopped where the code writer couldn't yet write Kotlin; that's what led to programs in any language, build commands and toolchain installs. |
+| Backend tests | **749 passing** (`pytest`), including tool tabs, connections (against a local stand-in service, client-credentials sign-in and an MCP server), agent trails, parallel Headquarters, the code writer's checks, programs in other languages and their builds, the Simulation department and toolchain installs. |
 
 **Not yet tried:**
+- **The newest pieces in a full run:** the Simulation department, building a program in another language end to end (such as an Android app with Gradle), and installing a toolchain through Internal Service all pass their tests but haven't been through a complete project yet.
 - **The latest fixes in a full run:** parallel Headquarters driving the stage work, automatic tests and batch proposals pass their tests, but haven't been through a complete project yet.
 - **Real services:** connections haven't run against a real online service. The Altium 365 example uses Nexar's documented sign-in addresses and scopes, but whether Nexar accepts the app's local sign-in return address isn't confirmed.
 - **Agents writing tabs and connections:** no agent has written a tab or a connection by itself yet. The examples were put through the same build and approval path.
@@ -255,7 +282,8 @@ Everything below was built and verified in this repository's latest work, in the
 
 ## Safety model
 
-- **You decide:** agents propose; only you approve concepts, gates, Skills, tool tabs, connections, installs, flashing, spending and every change sent to an outside service.
+- **You decide:** agents propose; only you approve concepts, gates, Skills, tool tabs, connections, installs, flashing, spending, test results and every change sent to an outside service.
+- **Running code:** agent-written code, builds and simulations run on this computer only for programs where you ticked **Run code and tests**, from their own folder, with a time limit, and never through a shell.
 - **Keys:** they go from you straight to Windows' keyring. No agent, script or tab ever sees one; the app's server adds them to requests and hides them if echoed back.
 - **Sealed tool tabs:** a sandboxed frame with no network and no access to the app. Data scripts run in a sandbox: no network, no writing into the project, no secrets, and only the one program you approved.
 - **Narrow connections:** a request can only go to the approved address, for an approved action. Placeholders are escaped so they can't change where a request goes.
@@ -275,6 +303,7 @@ backend/
     tabs.py         tool tabs: build, checks, sandboxed data scripts, approvals
     builtin_skills/ Tab-creator, Card-creator and Service-connector Skills, with examples
   tests/            pytest suite
+start.bat, start.sh  set up on first run, rebuild the app, start both servers and open the browser
 docs/images/        the pictures in this README
 PLAN.md             the original plan
 ```

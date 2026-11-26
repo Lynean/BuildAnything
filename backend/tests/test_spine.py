@@ -425,7 +425,7 @@ def test_findings_are_decided_only_through_their_own_route(client, tmp_path):
     assert client.post(f"/api/projects/{pid}/findings/{finding}/decide", json={"decision": "dismiss", "reason": ""}).status_code == 400
     done = client.post(f"/api/projects/{pid}/findings/{finding}/decide", json={"decision": "accept", "reason": "Accepted for the bench prototype."})
     assert done.status_code == 200 and led.state().records[finding]["decision"]["decision"] == "accept"
-    assert client.get("/api/agents").status_code == 200 and len(client.get("/api/agents").json()) == 30
+    assert client.get("/api/agents").status_code == 200 and len(client.get("/api/agents").json()) == 31
 
 
 def test_simulation_first_and_automatic_tests_over_api(client):

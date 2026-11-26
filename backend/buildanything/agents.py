@@ -17,7 +17,7 @@ from .gateway import Gateway
 from . import gates
 from .ledger import Actor, Ledger, LedgerError, ProjectState
 
-DEPARTMENTS = ("Mechanical", "Electrical", "Software", "Procurement")
+DEPARTMENTS = ("Mechanical", "Electrical", "Software", "Procurement", "Simulation")
 
 
 class ResearchUnavailable(LedgerError):
@@ -177,7 +177,7 @@ class RequirementOut(BaseModel):
 
 class TaskOut(BaseModel):
     key: str
-    department: Literal["Mechanical", "Electrical", "Software", "Procurement"]
+    department: Literal["Mechanical", "Electrical", "Software", "Procurement", "Simulation"]
     title: str
     weeks: int = Field(ge=1, le=12)
     depends_on: list[str] = Field(description="Keys of tasks that must finish first")

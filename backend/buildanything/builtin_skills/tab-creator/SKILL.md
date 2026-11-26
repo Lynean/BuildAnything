@@ -7,6 +7,12 @@ description: Make a tool tab, a TSX tab in a department's screen showing one too
 
 A **tool tab** is a tab in one department's screen, such as Mechanical | **MuJoCo**, that shows what one tool knows about the open project. You write it, the app checks and compiles it, and the person approves it before it appears. Use this Skill with the Card-creator Skill: a tab is a few cards.
 
+## When a tab is worth making
+
+Make one when the person would otherwise open files or another program to see how things are going. The best cards show what the tool already produces for debugging and checking, whatever the tool is: a 3D view of a model or scene, the latest renders or screenshots, plots of values over time, rule-check or test results with where each problem is, logs and errors from the last run, and data files as tables.
+
+The app lists likely ones in `tab_ideas`, from connections with visual or debugging actions, result files the project's programs saved, and tools departments asked for. Offer one in a line, saying which cards you'd make, and build it when the person agrees. A connection's change actions can't run from a tab, so show the files they save into the project instead.
+
 ## What a tab is made of
 
 | File | Required | What it does |
@@ -26,6 +32,16 @@ The tab runs in a **sealed frame**: no network, no storage, no access to the app
 
 Imports are limited to `@ba/tab`, `@ba/model`, `react`, `three` and the tab's own files.
 
+## Where a tab goes
+
+Place a tab by what each department delivers, not by which tool it is:
+- **Simulation** runs simulations and shows them. Put a tab there when it shows runs live or lets someone inspect a run: the simulated scene, values over time, a run's log and errors, comparisons between runs. Only when Simulation is on the project's team.
+- **The department whose deliverable the results are about** gets the static results it needs to make its next decision: Mechanical the stress or deflection plots for its parts, Electrical the voltage and current plots for its circuit, Software the test and timing results for its code. These come from files already saved, such as plots, screenshots, recordings and data tables.
+- **Both**, when a tool does both: one tab in Simulation for running and inspecting, and one in the department for the results that bear on its design. Each reads only its own files and says where the rest are.
+- A tool a department operates for its own deliverable belongs to that department, even if it runs scripts: a CAD program's tab goes in Mechanical, because the model is the deliverable and the scripts are only a means.
+
+Before proposing, check `project` in your input for the team: never place a tab in a department that isn't on it.
+
 ## Steps
 
 1. **Decide what the tab shows.** Ask what the department needs from this tool to make its next decision. One tab is one tool. Name it after the tool, 2 to 24 characters, such as `MuJoCo`, `Fusion`, `KiCad checks` or `MATLAB`.
@@ -36,7 +52,7 @@ Imports are limited to `@ba/tab`, `@ba/model`, `react`, `three` and the tab's ow
    - **A program only the person operates** (Fusion, Altium, a GUI app). The tab shows its exported files and the scripts handed to the person. It never pretends to drive the program.
 3. **Read an example:** `read_example("fusion")`, `"mujoco"`, `"kicad"`, `"matlab"` or `"plot"`.
 4. **Write the files** with `write_tab_file`, then run `build_tab`. It compiles the tab, checks it against the rules below, runs the data script on the open project in the sandbox (if the person allowed tab scripts), and renders the tab once to catch errors. Fix everything it reports and build again. Stop after the build is clean. Each build costs time.
-5. **Propose it** with `propose_tab(tab_id, tool, department, title, summary, exe, why)`. Then tell the person in plain words what the tab shows, where its data comes from, and that they approve it at Reception and choose which projects show it.
+5. **Propose it** with `propose_tab(tab_id, tool, department, title, summary, exe, why, reads_json)`, once per department if it goes in two places (see Where a tab goes). Then tell the person in plain words what the tab shows, where its data comes from, and that they approve it at Reception and choose which projects show it.
 
 ## Rules (each comes from something that went wrong before)
 

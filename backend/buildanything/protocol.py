@@ -14,7 +14,7 @@ from .ledger import Ledger
 
 COMMANDS = ("BRIEF", "TASK", "QUESTION", "CHANGE_NOTICE", "RECHECK", "HOLD", "RESUME")
 ReportType = Literal["DONE", "PARTIAL", "BLOCKED", "ANSWER", "REQUEST", "CHANGE_REQUEST", "RISK", "BUG"]
-Owner = Literal["Electrical", "Mechanical", "Software", "Procurement", "Person", "Tool"]
+Owner = Literal["Electrical", "Mechanical", "Software", "Procurement", "Simulation", "Person", "Tool"]
 MAX_WORDS = 60
 
 

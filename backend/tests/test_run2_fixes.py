@@ -179,3 +179,261 @@ def test_several_parts_and_components_are_proposed_in_one_call(tmp_path):
     tools = {getattr(t, "__name__", ""): t for t in hq._lead_tools(led, None, "Electrical", hq.Services(None))}
     out = tools["propose_components"]([{"part_number": "PCA9685", "role": "Servo driver", "fills": "Servo driver"}, {"part_number": "Fuse, rating TBD", "role": "Protection"}])
     assert "id" in out["results"][0] and "error" in out["results"][1]
+
+
+def test_tab_ideas_come_from_what_is_really_there_not_tool_names(tmp_path, monkeypatch):
+    import json as _json
+
+    from buildanything import tabideas
+
+    app_root, project = tmp_path / "_app", tmp_path / "proj"
+    app_root.mkdir()
+    (project / "mechanics" / "results").mkdir(parents=True)
+    for name in ("frame1.png", "frame2.png", "run.csv"):
+        (project / "mechanics" / "results" / name).write_text("x", encoding="utf-8")
+    app, led = Ledger(app_root), Ledger(project)
+    led.append(Actor.system("software"), "software.ran", device="laptop", script="run.py", args=[], ok=True,
+               made=["mechanics/results/frame1.png", "mechanics/results/frame2.png", "mechanics/results/run.csv", "firmware/laptop/app.py"])
+    led.append(Actor.system("reception"), "tool.requested", department="Software", capability="Render the scene to images", why="to check the layout", service="Internal Service")
+    modeller = {"id": "some-modeller", "name": "Some modeller", "departments": ["Mechanical"], "operations": [
+        {"name": "list_documents", "description": "List open documents", "writes": False},
+        {"name": "run_script", "description": "Run a script to inspect the design", "writes": True}]}
+    prices = {"id": "prices", "name": "Prices", "departments": ["Mechanical"], "operations": [{"name": "get_price", "description": "Price of a part", "writes": False}]}
+    monkeypatch.setattr(cloud, "store_for", lambda root: SimpleNamespace(listing=lambda: [{"approved": modeller}, {"approved": prices}]))
+    ideas = tabideas.candidates(app_root, app, project, ["Mechanical", "Software"])
+    assert [i["key"] for i in ideas] == ["files:mechanics/results", "conn:some-modeller"]  # a request to Reception is not a tool with output
+    assert ideas[0]["department"] == "Mechanical" and "3 result files" in ideas[0]["could_show"]  # code files aren't results
+    assert ideas[1]["service"] == "External Service" and "saves into the project" in ideas[1]["could_show"]  # a price lookup has nothing to see
+    tabideas.dismiss(app, "proj", "files:mechanics/results", Actor.human())
+    assert "files:mechanics/results" not in [i["key"] for i in tabideas.candidates(app_root, app, project, ["Mechanical", "Software"])]
+    (app_root / "tabs" / "modeller").mkdir(parents=True)
+    (app_root / "tabs" / "modeller" / "manifest.json").write_text(_json.dumps({"id": "modeller", "tool": "Some modeller", "status": "proposed"}), encoding="utf-8")
+    assert tabideas.candidates(app_root, app, project, ["Mechanical", "Software"]) == []  # that tool has a tab now
+
+def test_a_tab_declares_its_files_and_the_department_that_makes_them_is_briefed(tmp_path, monkeypatch):
+    import json as _json
+
+    from buildanything import tabs
+
+    app_root, project = tmp_path / "_app", tmp_path / "rua"
+    (project / "mechanics" / "cad" / "robot" / "meshes").mkdir(parents=True)
+    (project / "mechanics" / "cad" / "robot" / "meshes" / "m000.stl").write_text("solid", encoding="utf-8")
+    app = Ledger(app_root)
+    reads = tabs.clean_reads([{"path": "mechanics/cad/**/*.stl", "what": "CAD meshes", "made_by": "Mechanical"},
+                              {"path": "mechanics/sim/runs/*.json", "what": "recorded simulation runs", "made_by": "Software"}])
+    status = tabs.reads_status(project, reads)
+    assert [r["found"] for r in status] == [1, 0]
+    try:
+        tabs.clean_reads([{"path": "../secrets/*.txt", "made_by": "Software"}])
+        raise AssertionError("a path outside the project was accepted")
+    except tabs.TabError:
+        pass
+    (app_root / "tabs" / "mujoco").mkdir(parents=True)
+    (app_root / "tabs" / "mujoco" / "manifest.json").write_text(_json.dumps({"id": "mujoco", "status": "approved", "approved_hash": "v1", "approved_title": "MuJoCo",
+                                                                            "approved_department": "Mechanical", "approved_reads": reads, "summary": "The simulation."}), encoding="utf-8")
+    monkeypatch.setattr(tabs, "read_files", lambda root, tab_id, which="proposed": {})
+    monkeypatch.setattr(tabs, "_hash", lambda files: "v1")
+    assert tabs.briefs_due(app_root, app, project, ["Mechanical", "Software"]) == []  # not shown on this project yet
+    tabs.set_shown(app, "mujoco", "rua", True, Actor.human())
+    due = tabs.briefs_due(app_root, app, project, ["Mechanical", "Software"])
+    assert [(d["department"], d["tab"]) for d in due] == [("Software", "mujoco")]  # Mechanical's meshes exist; Software's runs don't
+
+    led = Ledger(project)
+    led.append(Actor.human(), "concept.approved", summary="s", decisions=[])
+    monkeypatch.setattr(shape, "team", lambda state: ["Mechanical", "Software"])
+    steps = []
+    nxt = lambda: hq.next_action(led)
+    step = next((s for s in [nxt()] if s and s.startswith("tab_brief:")), None)
+    if step is None:  # other plan steps may come first in a bare project; the brief must still be offered
+        due_steps = [f"tab_brief:{b['tab']}:{b['version']}:{b['department']}" for b in hq.tab_briefs(led, led.state())]
+        step = due_steps[0]
+    assert step == "tab_brief:mujoco:v1-0:Software" and hq.department_of(led, step) == "Software"  # -0: no run permission yet; granting it briefs again
+
+    async def fake_lead(ledger, gateway, department, message, services, **kwargs):
+        steps.append((department, message, kwargs.get("sent", {}).get("type")))
+        return "ok"
+
+    monkeypatch.setattr(hq, "run_lead", fake_lead)
+    import asyncio
+    asyncio.run(hq.run_step(led, None, step, hq.Services(None)))
+    assert steps and steps[0][0] == "Software" and "mechanics/sim/runs/*.json" in steps[0][1] and steps[0][2] == "TASK"
+
+
+def test_tab_scripts_use_the_projects_own_python_when_it_has_one(tmp_path):
+    from buildanything import tabs
+
+    project = tmp_path / "rua"
+    project.mkdir()
+    assert tabs.tab_python(project) == sys.executable
+    info = tabs.python_packages(project, ["json", "surely_not_a_package_xyz"])
+    assert "json" in info["has"] and "surely_not_a_package_xyz" in info["missing"] and "app's own Python" in info["python"]
+
+
+def test_software_can_run_its_own_script_to_make_tab_files_once_allowed(tmp_path):
+    root = tmp_path / "rua"
+    base = root / "firmware" / "laptop"
+    base.mkdir(parents=True)
+    (base / "requirements.txt").write_text("", encoding="utf-8")
+    (base / "sim.py").write_text(
+        "import sys, json, pathlib\n"
+        "out = pathlib.Path(sys.argv[2]); out.mkdir(parents=True, exist_ok=True)\n"
+        "(out / 'run.json').write_text(json.dumps({'frames': 3}))\n"
+        "print('saved run')\n", encoding="utf-8")
+    led = Ledger(root)
+    try:
+        software.run_program(led, root, "laptop", "sim.py", ["--export", "../../mechanics/sim"], Actor.agent("software"))
+        raise AssertionError("ran without the person's permission")
+    except software.SoftwareError as exc:
+        assert "Run code and tests" in str(exc)
+    software.allow_autotest(led, "laptop", True, Actor.human())
+    result = software.run_program(led, root, "laptop", "sim.py", ["--export", "../../mechanics/sim"], Actor.agent("software"))
+    assert result["ok"] and "saved run" in result["output"] and "mechanics/sim/run.json" in result["files_made_or_changed"]
+    for bad in ("../../outside.py", "requirements.txt"):
+        try:
+            software.run_program(led, root, "laptop", bad, [], Actor.agent("software"))
+            raise AssertionError(f"{bad} was run")
+        except software.SoftwareError:
+            pass
+    assert [e["data"]["ok"] for e in led.events() if e["kind"] == "software.ran"] == [True]
+
+
+def test_simulation_is_a_department_with_its_own_program_and_tools(tmp_path, monkeypatch):
+    from buildanything import agent_specs, traceability
+
+    assert "Simulation" in shape.DEPARTMENT_TYPES and agent_specs.SPECS["lead_simulation"].area == "Simulation"
+    led = Ledger(tmp_path / "p")
+    monkeypatch.setattr(shape, "team", lambda state: ["Mechanical", "Software", "Simulation"])
+    sim_tools = {getattr(t, "__name__", "") for t in hq._lead_tools(led, None, "Simulation", hq.Services(None))}
+    assert {"write_sim_code", "run_simulation", "propose_test_result"} <= sim_tools and "write_code" not in sim_tools
+    sw_tools = {getattr(t, "__name__", ""): t for t in hq._lead_tools(led, None, "Software", hq.Services(None))}
+    assert "run_program" not in sw_tools and "write_sim_code" not in sw_tools
+    import asyncio
+    assert "Simulation department's code" in asyncio.run(sw_tools["write_code"]("simulation", "anything", ""))["error"]
+    plan = agents.PlanOut(requirements=[], tasks=[agents.TaskOut(key="S1", department="Simulation", title="Simulate the handover", weeks=1, depends_on=[])])
+    assert agents.plan_problems(plan, ["Mechanical", "Software", "Simulation"]) == []
+
+
+def test_a_simulation_result_is_proposed_and_only_a_person_records_it(tmp_path):
+    from buildanything import traceability
+
+    led = Ledger(tmp_path / "p")
+    (tmp_path / "p" / "simulation" / "results" / "run1").mkdir(parents=True)
+    (tmp_path / "p" / "simulation" / "results" / "run1" / "stop.csv").write_text("t,d\n0,0.1\n", encoding="utf-8")
+    test = led.propose(Actor.agent("controller"), "test", key="T4", covers=["R12"], title="Stops at 10 cm", owner="Simulation", procedure="p", pass_if="stop distance at least 0.10 m",
+                       metric="stop distance", unit="m", min=0.10, max=None, uses=[])
+    led.append(Actor.human(), "record.confirmed", id=test)
+    proposal = traceability.propose_result(led, "T4", 0.093, "", "Ran the approach scenario 20 times in the physics simulation; the closest stop was 0.093 m.",
+                                           ["simulation/results/run1/stop.csv", "../outside.txt"], Actor.agent("simulation"))
+    waiting = traceability.proposals(led)[test]
+    assert waiting[0]["files"] == ["simulation/results/run1/stop.csv"]  # nothing outside the project
+    assert not [e for e in led.events() if e["kind"] == "test.result"]  # an agent can't record a result itself
+    outcome = traceability.accept_proposal(led, proposal, Actor.human())
+    assert outcome == "failed"  # the app judges the number: 0.093 m is under the 0.10 m limit
+    result = next(e for e in led.events() if e["kind"] == "test.result")
+    assert result["actor"]["kind"] == "human" and "stop.csv" in result["data"]["evidence"]
+    assert traceability.proposals(led) == {}
+
+
+
+def test_programs_can_be_written_in_any_language_but_not_binaries_or_secrets():
+    from buildanything import firmware as fw
+
+    allowed = ["app/src/main/java/com/air/MainActivity.kt", "app/src/main/AndroidManifest.xml", "build.gradle.kts", "settings.gradle", "gradlew", "gradlew.bat",
+               "Sources/App/Main.swift", "Program.cs", "game/scripts/pointer.lua", "analysis/plot.m", "web/index.html", "Makefile", "app.py"]
+    refused = [".env", "config/client_secret.json", "app/build/intermediates/x.kt", "res/icon.png", "release.keystore", "lib/x.jar", "node_modules/a/index.js", "README"]
+    assert all(fw.HOST_PATH.match(x) for x in allowed), [x for x in allowed if not fw.HOST_PATH.match(x)]
+    assert not any(fw.HOST_PATH.match(x) for x in refused), [x for x in refused if fw.HOST_PATH.match(x)]
+    assert not fw.HOST_TEXT.search("MainActivity.kt") and fw.HOST_TEXT.search("AndroidManifest.xml")  # Kotlin gets described blocks; XML is written as it is
+    kotlin = fw.render(fw.FileOut(path="MainActivity.kt", owner="Software", blocks=[fw.BlockOut(title="Activity", description="Reads the gyroscope and sends samples over Bluetooth.", code="class MainActivity {}")]))
+    assert kotlin.startswith("/* @block ") and fw.parse(kotlin)["blocks"][0]["title"] == "Activity"
+
+
+def test_a_program_runs_its_build_script_or_a_build_tool_and_hears_when_one_is_missing(tmp_path):
+    root = tmp_path / "proj"
+    base = root / "firmware" / "phone"
+    base.mkdir(parents=True)
+    (base / "build.bat").write_text("@echo off\r\necho built> out.txt\r\necho build ok\r\n", encoding="utf-8")
+    (base / "notes.txt").write_text("not a script", encoding="utf-8")
+    led = Ledger(root)
+    software.allow_autotest(led, "phone", True, Actor.human())
+    ran = software.run_command(led, root, "phone", ["build.bat"], Actor.agent("software"))
+    assert ran["ok"] and "build ok" in ran["output"] and "firmware/phone/out.txt" in ran["files_made_or_changed"]
+    missing = software.run_command(led, root, "phone", ["surely-not-a-build-tool-xyz", "build"], Actor.agent("software"))
+    assert not missing["ok"] and missing["missing_program"] == "surely-not-a-build-tool-xyz" and "request_tool" in missing["output"]
+    for bad in (["notes.txt"], ["cmd", "/c", "del", "x"], ["../../outside.bat"]):
+        try:
+            software.run_command(led, root, "phone", bad, Actor.agent("software"))
+            raise AssertionError(f"{bad} was run")
+        except software.SoftwareError:
+            pass
+    led.append(Actor.system("software"), "software.build_command", device="phone", command=["build.bat"])
+    assert software.build_command(led, "phone") == ["build.bat"]
+    assert "isn't written in Python" in software.run_tests(led, root, "phone", True, Actor.human())["lines"][0]
+
+
+async def test_a_queued_message_is_told_it_waits_its_turn(tmp_path, monkeypatch):
+    led = Ledger(tmp_path / "p")
+    monkeypatch.setattr(shape, "team", lambda state: ["Software"])
+    monkeypatch.setattr(shape, "on_team", lambda state, d: True)
+
+    async def fake_lead(*args, **kwargs):
+        return "ok"
+
+    monkeypatch.setattr(hq, "run_lead", fake_lead)
+    board = jobs._JOBS.setdefault(str(led.root), {})
+    board["job_z"] = jobs.Job(id="job_z", department="Software", title="Answer a change", items=[], touches={jobs.UNKNOWN}, clone=0, status="running")
+    try:
+        await hq.talk_to_department(led, None, "Software", "Please check Bluetooth support.", hq.Services(None))
+    finally:
+        board.pop("job_z", None)
+    said = [m["text"] for m in hq.thread(led.events(), "Software")]
+    assert any("finishing another job" in t for t in said)
+
+
+def test_in_plan_departments_do_the_work_behind_the_persons_items_once_the_plan_is_agreed(tmp_path, monkeypatch):
+    led = Ledger(tmp_path / "p")
+    monkeypatch.setattr(shape, "team", lambda state: ["Software"])
+    monkeypatch.setattr(hq, "MAX_DRIVES", 6)  # the shared test setup switches driving off
+    monkeypatch.setattr(gates, "current_gate", lambda state: "G2")
+    monkeypatch.setattr(gates, "phase", lambda state, gate: "G2")
+    monkeypatch.setattr(gatereport, "blockers", lambda gate, state, ledger: [("Software", "Build checks that belong to Build")])
+    monkeypatch.setattr(gates, "criteria_view", lambda state, gate: [{"index": 0, "text": "Specify the message format between phone and laptop.", "met": False}])
+    task = led.propose(Actor.agent("controller"), "task", key="S1", department="Software", title="Build the phone and laptop message format", weeks=1, depends_on=[], start_week=0)
+    assert hq._drive(led, led.state(), set()) is None  # the plan itself isn't agreed yet
+    led.append(Actor.human(), "record.confirmed", id=task)
+    work = hq._owned_work(led, led.state(), "G2")
+    assert work == {"Software": ["Make this work and show how you checked it, so the person can confirm it: Specify the message format between phone and laptop."]}  # no Build work in Plan
+    assert (hq._drive(led, led.state(), set()) or "").startswith("drive:G2:Software:")
+
+
+def test_internal_service_can_define_and_install_a_toolchain_with_the_persons_approval(tmp_path, monkeypatch):
+    from buildanything import connectors as conn, services
+
+    app = Ledger(tmp_path / "_app")
+    raw = {"id": "some-sdk", "group": "platform", "name": "Some SDK", "what": "Adds packages for building the phone app.", "check_kind": "exe", "check_value": "some-sdk-check",
+           "get_kind": "command", "get_value": ["python", "-c", "print('installed')"]}
+    entry = services.propose_tool(app, raw, "The phone app needs it to build.", Actor.agent("internal_service"))
+    services.load_custom(app)
+    assert services.entry_for("some-sdk") is None  # nothing joins the list until the person approves it
+    services.decide_tool(app, "some-sdk", True, "", Actor.human())
+    assert services.entry_for("some-sdk")["get"] == {"command": ["python", "-c", "print('installed')"]}
+    step = services.plan("some-sdk", None, None)
+    assert step["steps"][0][0].lower().endswith(("python.exe", "python")) and step["steps"][0][1:] == ["-c", "print('installed')"]
+    for bad in (["powershell", "-c", "iwr x"], ["C:/tools/x.exe"], ["not-a-real-installer-xyz", "add"]):
+        try:
+            services.validate_tool({**raw, "id": "other-sdk", "get_value": bad})
+            raise AssertionError(f"{bad} was accepted")
+        except services.ServiceError:
+            pass
+    services._custom.clear()
+
+
+def test_programs_installed_after_the_app_started_are_found(monkeypatch):
+    from buildanything import connectors as conn
+
+    monkeypatch.setattr(conn, "_registry_environment", lambda: {"PATH": r"C:\NewTool\bin", "ANDROID_HOME": r"C:\Android\Sdk", "MY_TOKEN_PATH": "x"})
+    monkeypatch.setenv("PATH", r"C:\Old\bin")
+    monkeypatch.delenv("ANDROID_HOME", raising=False)
+    env = conn.clean_environment()
+    assert env["PATH"].split(";")[0] == r"C:\Old\bin" and r"C:\NewTool\bin" in env["PATH"].split(";")  # what was set stays first
+    assert env["ANDROID_HOME"] == r"C:\Android\Sdk"

@@ -18,8 +18,9 @@ from .ledger import Actor, Ledger, LedgerError, ProjectState
 DEPARTMENT_TYPES: dict[str, dict[str, str]] = {
     "Mechanical": {"blurb": "Parts, structure, mounting, materials, CAD and fabrication.", "lead": "lead_mechanical"},
     "Electrical": {"blurb": "Components, datasheets, pins, power, circuits and low-level firmware.", "lead": "lead_electrical"},
-    "Software": {"blurb": "Programs, apps, simulations and tests.", "lead": "lead_software"},
+    "Software": {"blurb": "The product's own code: the programs, apps and device logic that ship, with their tests.", "lead": "lead_software"},
     "Procurement": {"blurb": "Buying parts: prices, suppliers and orders.", "lead": "lead_procurement"},
+    "Simulation": {"blurb": "Proves the design works before it's built: runs physics, circuit, structural or other simulations of the other departments' models and code, and produces results (data, plots, renders, recordings) against the requirements.", "lead": "lead_simulation"},
 }
 DEFAULT_TEAM = ("Electrical", "Mechanical", "Software", "Procurement")
 SYSTEM = Actor.system("headquarters")
