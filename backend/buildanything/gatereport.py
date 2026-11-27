@@ -348,6 +348,8 @@ def _live_problems(ledger: Ledger) -> list[Blocker]:
 
 def _build_and_bring_up(ledger: Ledger, state: ProjectState) -> list[Blocker]:
     out: list[Blocker] = _tests_of_stage(ledger, "before_buying", "before-buying")
+    for later in traceability.after_build(ledger):  # what couldn't be measured before the hardware existed is due now
+        out.append((later["department"], f"Now that it's built, carry out the measurements you planned for after Build and report the results: {'; '.join(i[:160] for i in later['items'][:6])}."))
     current = mech.current_parts(state)
     unordered = designneeds.not_on_order(state, current)
     if unordered:
@@ -517,7 +519,7 @@ def gate_list(ledger: Ledger) -> list[dict[str, Any]]:
     for item in gates.plan(state):
         gate = item["id"]
         entry: dict[str, Any] = {"id": gate, "name": item.get("title") or item["name"], "stage": item["name"], "purpose": item.get("purpose", ""), "phase": item["phase"],
-                                 "checks": [{"key": k, "label": gates.CHECKS[k][0]} for k in item.get("checks", [])], "criteria": gates.criteria_view(state, gate),
+                                 "checks": [{"key": k, "label": gates.CHECKS[k][0]} for k in item.get("checks", [])], "criteria": gates.criteria_view(state, gate, ledger.events()),
                                  "state": "approved" if gate in approved else "imported" if gate in state.gates_imported else "current" if gate == current else "later"}
         if gate in approved:
             entry["by"] = approved[gate]["actor"]["name"]

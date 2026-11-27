@@ -9,7 +9,7 @@ interface DepOption { id: string; label: string; kind: string; }
 interface Row { id: string; key: string; text: string; personSaid: string; addedBecause: string; status: string; tests: string[]; deviation: string | null; }
 interface Deviation { id: string; key: string; what: string; why: string; restores: string; status: string; by: string; closedBecause?: string; }
 interface Dropped { key: string; text: string; why: string; }
-interface View { rows: Row[]; tests: Test[]; counts: Record<string, number>; total: number; untestable: string[]; dependencyOptions: DepOption[]; deviations: Deviation[]; dropped: Dropped[]; }
+interface View { afterBuild?: { department: string; items: string[]; at: string }[]; rows: Row[]; tests: Test[]; counts: Record<string, number>; total: number; untestable: string[]; dependencyOptions: DepOption[]; deviations: Deviation[]; dropped: Dropped[]; }
 
 const STATUS: Record<string, [string, string]> = {
   proven: ["Proven", "good"], deviated: ["Accepted deviation", "warn"], failed: ["Failed", "bad"], retest: ["Test again", "warn"], not_tested: ["Not tested yet", ""], needs_approval: ["Test needs approval", "warn"], no_test: ["No test", "bad"],
@@ -132,6 +132,13 @@ export default function TestsScreen() {
     <div className="page">
       <div className="hq-head"><h1>Tests</h1><select aria-label="Project" value={projectId} onChange={(e) => setProjectId(e.target.value)}>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
       <p className="intro">Does the design do what we said it would? Each requirement needs a test, and each test needs a measured result.</p>
+      {(view.afterBuild ?? []).length > 0 && (
+        <section className="card wide">
+          <h3>To measure after Build</h3>
+          <p className="hint">These can only be proven on the real hardware. Until then the departments use the provisional values below, and at Build each one becomes their work.</p>
+          {view.afterBuild!.map((a) => <div key={a.department}><b>{a.department}</b> <span className="hint">({a.at})</span><ul>{a.items.map((i) => <li key={i}>{i}</li>)}</ul></div>)}
+        </section>
+      )}
       {view.total === 0 ? <p className="hint">Requirements appear here once they're confirmed.</p> : (
         <>
           <section className="card wide">

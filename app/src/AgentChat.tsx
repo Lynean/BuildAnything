@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import QuestionForm, { type Question } from "./QuestionForm";
 import { ScreenChip, addScreenLinks } from "./Linked";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-export interface ChatMessage { from: "you" | "agent" | "other"; text: string; label?: string; details?: string; choices?: string[]; }
+export interface ChatMessage { from: "you" | "agent" | "other"; text: string; label?: string; details?: string; choices?: string[]; questions?: Question[]; }
 
 // The options an agent offers: its own list, or a numbered list of 2 to 4 short lines ending its message.
 export function choicesOf(m: ChatMessage): string[] {
@@ -75,6 +76,7 @@ export default function AgentChat({ agent, role, messages, earlier, between, can
           : <div className={`bubble ${m.from}`} key={i}>{m.label && <div className="bubble-label">{m.label}</div>}<Rendered text={m.text} />{m.details && <details className="agent-earlier"><summary>Show more</summary><Rendered text={m.details} /></details>}</div>)}
         {(() => {
           const last = messages[messages.length - 1];
+          if (last && last.from === "agent" && !thinking && last.questions && last.questions.length) return <QuestionForm key={messages.length} questions={last.questions} onSend={(t) => onSend(t)} />;
           const options = last && last.from === "agent" && !thinking ? choicesOf(last) : [];
           return options.length > 0 && (
             <div className="agent-choices" role="group" aria-label="Choose an answer">

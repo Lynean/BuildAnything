@@ -12,7 +12,7 @@ from buildanything.ledger import Actor, Ledger, LedgerError, PermissionDenied
 from buildanything.providers import MemoryStore
 
 HUMAN = Actor.human()
-VALUES = {"project": "p", "confirmed_claims": "c", "earlier_discussion": "d", "message": "m", "shape_options": "o"}
+VALUES = {"project": "p", "confirmed_claims": "c", "earlier_discussion": "d", "settled": "s", "message": "m", "shape_options": "o"}
 QUOTE = "flexible wings improved lift by a measurable margin in hover"
 PAPER = Paper("1234.5678", "Flexible wings", f"We show that {QUOTE} across trials.", "https://arxiv.org/abs/1234.5678")
 
@@ -262,12 +262,12 @@ def _plan(tasks):
 
 
 def _task(key, deps=(), weeks=1, dept="Electrical"):
-    return agents.TaskOut(key=key, department=dept, title=key, weeks=weeks, depends_on=list(deps))
+    return agents.TaskOut(key=key, department=dept, title=key, depends_on=list(deps))
 
 
-def test_schedule_uses_longest_dependency():
-    plan = _plan([_task("A", weeks=2), _task("B", weeks=3), _task("C", ["A", "B"])])
-    assert agents.schedule(plan) == {"A": 0, "B": 0, "C": 3}
+def test_schedule_orders_tasks_by_their_longest_chain_of_dependencies():
+    plan = _plan([_task("A"), _task("B", ["A"]), _task("C", ["A", "B"])])
+    assert agents.schedule(plan) == {"A": 0, "B": 1, "C": 2}
 
 
 def test_plan_cycle_and_unknown_dependency_are_found():
@@ -425,7 +425,7 @@ def test_findings_are_decided_only_through_their_own_route(client, tmp_path):
     assert client.post(f"/api/projects/{pid}/findings/{finding}/decide", json={"decision": "dismiss", "reason": ""}).status_code == 400
     done = client.post(f"/api/projects/{pid}/findings/{finding}/decide", json={"decision": "accept", "reason": "Accepted for the bench prototype."})
     assert done.status_code == 200 and led.state().records[finding]["decision"]["decision"] == "accept"
-    assert client.get("/api/agents").status_code == 200 and len(client.get("/api/agents").json()) == 31
+    assert client.get("/api/agents").status_code == 200 and len(client.get("/api/agents").json()) == 32
 
 
 def test_simulation_first_and_automatic_tests_over_api(client):

@@ -371,7 +371,31 @@ def component_names(state: ProjectState) -> set[str]:
     return {c["fields"]["part_number"] for c in state.of_type("component") if c["status"] != "rejected"}
 
 
+_SCANS: dict[tuple[Any, ...], tuple[tuple[Any, ...], list[dict[str, Any]]]] = {}
+
+
 def scan_workspace(root: Path, device: str, valid_notes: set[str] | None = None, known_components: set[str] | None = None) -> list[dict[str, Any]]:
+    """Remembered until the program's files (or the notes and parts it's checked against) change."""
+    import copy
+
+    from .software import _folder_stamp
+
+    base = root / "firmware" / device
+    if not base.exists():
+        return []
+    key = (str(base), None if valid_notes is None else frozenset(valid_notes), None if known_components is None else frozenset(known_components))
+    stamp = _folder_stamp(base)
+    known = _SCANS.get(key)
+    if known and known[0] == stamp:
+        return copy.deepcopy(known[1])
+    found = _scan_workspace(root, device, valid_notes, known_components)
+    if len(_SCANS) > 100:
+        _SCANS.clear()
+    _SCANS[key] = (stamp, copy.deepcopy(found))
+    return found
+
+
+def _scan_workspace(root: Path, device: str, valid_notes: set[str] | None = None, known_components: set[str] | None = None) -> list[dict[str, Any]]:
     base = root / "firmware" / device
     out = []
     if not base.exists():
@@ -916,23 +940,23 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, bo
     held_back: list[str] = []
     for attempt in range(3):
         output: FirmwareOut = await gateway.run(agent="firmware", values=values(feedback), output_type=FirmwareOut, tools=[*session.tools(), code_reader(root, device)], request_limit=40)
-        merged, kept_problems = merge_unchanged(root, device, output.files)
+        merged, kept_problems = await asyncio.to_thread(merge_unchanged, root, device, output.files)
         output = output.model_copy(update={"files": merged})
         if kept_problems:
             feedback = "\n".join(kept_problems)
             attempts.append({"problem": "documentation", "details": kept_problems})
             continue
         known = valid_note_ids(ledger.state())
-        existing = [f["path"] for f in scan_workspace(root, device) if not f["generated"]]
+        existing = [f["path"] for f in await asyncio.to_thread(scan_workspace, root, device) if not f["generated"]]
 
         def check(files: list[FileOut]) -> list[str]:
             return documentation_problems(files) + citation_problems(files, known) + component_problems(files, component_names(ledger.state())) + layer_problems(output.plan, files, existing, pin_defines(ledger.state()) if "driver" in layers else {}, layers, lower_plan(ledger, device) if scope == "app" else None) + (frozen_problems(ledger, root, device, files) if "mid" in layers else []) + [p for f in files for p in devicefacts.typed_values(ledger.state(), f.path, "\n".join(b.code for b in f.blocks))]
 
-        problems = check(output.files)
+        problems = await asyncio.to_thread(check, output.files)
         if problems:
             attempts.append({"problem": "documentation", "details": problems})
             kept, held = salvage(root, device, output.files, problems)
-            if kept and not check(kept):  # keep the good blocks now; only the failed ones go back to the writer
+            if kept and not await asyncio.to_thread(check, kept):  # keep the good blocks now; only the failed ones go back to the writer
                 write_files(root, device, kept)
                 saved_paths.update(f.path for f in kept)
                 held_back[:] = held

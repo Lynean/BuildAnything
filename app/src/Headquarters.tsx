@@ -228,7 +228,7 @@ export default function Headquarters() {
   const tasks = [...of("task").filter(live)].sort((a, b) => a.fields.start_week - b.fields.start_week);
   const drafts = of("concept_draft");
   const latest = [...drafts].reverse().find((d) => d.fields.summary);
-  const conceptMessages: ChatMessage[] = drafts.flatMap((d): ChatMessage[] => [...(d.fields.message ? [{ from: "you" as const, text: d.fields.message }] : []), { from: "agent" as const, text: d.fields.reply }]);
+  const conceptMessages: ChatMessage[] = drafts.flatMap((d): ChatMessage[] => [...(d.fields.message ? [{ from: "you" as const, text: d.fields.message }] : []), { from: "agent" as const, text: d.fields.reply, questions: d.fields.questions }]);
   if (sending) conceptMessages.push({ from: "you", text: sending });
   const sendConcept = (text: string) => { setSending(text); run("", async () => { try { setProject(await call<Project>(`${p}/concept`, "POST", { message: text })); } finally { setSending(""); } }); };
   const findings = of("finding");
@@ -310,6 +310,7 @@ export default function Headquarters() {
                   <button className="small" disabled={!!busy || !waive.trim()} onClick={() => run("Saving", async () => setProject(await call<Project>(`${p}/hq/waive-research`, "POST", { reason: waive })))}>Continue without</button>
                 </>}
                 {n.goto && <ScreenChip screen={n.goto as string}>Open</ScreenChip>}
+                {n.kind === "tool" && n.key && <button className="small" disabled={!!busy} title="Close this request: for example it's solved, or a tool you approved covers it." onClick={() => { const reason = window.prompt("Close this tool request? Optionally say why (for example, the tool you approved covers it).", ""); if (reason !== null) run("Closing", async () => { await call(`/services/asks/${n.key}/close`, "POST", { reason }); setHq(await call<Hq>(`${p}/hq`)); }); }}>Close</button>}
                 {n.kind === "tab_idea" && <button className="small" disabled={!!busy} onClick={() => run("Saving", async () => { await call(`${p}/tab-ideas/dismiss`, "POST", { key: n.key }); setHq(await call<Hq>(`${p}/hq`)); })}>Not needed</button>}
                 {n.kind === "gate" && <button className="primary small" disabled={!!busy} onClick={() => run("Approving", async () => setProject(await call<Project>(`${p}/gates/${n.gate}/approve`, "POST")))}>Approve</button>}
               </span>

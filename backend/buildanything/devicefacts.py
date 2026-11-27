@@ -6,6 +6,8 @@ constant, never a typed number, so a wrong fact is one visible record instead of
 """
 from __future__ import annotations
 
+import asyncio
+
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -147,12 +149,13 @@ async def extract(ledger: Ledger, gateway: Gateway, component_id: str) -> dict[s
     actor = Actor.agent("device_facts")
     for sheet in docs:
         path = ledger.root / "datasheets" / sheet["fields"]["file"]
-        texts = ds.page_texts(path)
+        texts = await asyncio.to_thread(ds.page_texts, path)  # a long manual takes a while: the app keeps answering meanwhile
         kind = documents.doc_kind(sheet)
-        for index in fact_pages(texts, variant=record["fields"].get("variant", "")):
+        variant = record["fields"].get("variant", "")
+        for index in await asyncio.to_thread(lambda: fact_pages(texts, variant=variant)):
             read.append(f"{documents.DOC_KINDS[kind]} p.{index + 1}")
             # The real page goes too, because extracted text scrambles tables and loses timing diagrams.
-            output: FactSheet = await gateway.run(agent="device_facts", output_type=FactSheet, request_limit=3, attachments=[PdfPage(ds.one_page_pdf(path, index))],
+            output: FactSheet = await gateway.run(agent="device_facts", output_type=FactSheet, request_limit=3, attachments=[PdfPage(await asyncio.to_thread(ds.one_page_pdf, path, index))],
                                                   values={"part": record["fields"]["part_number"] + (f" (the person's variant: {record['fields']['variant']})" if record["fields"].get("variant") else ""), "document": documents.DOC_KINDS[kind], "page": f"Page {index + 1}:\n{texts[index][:6000]}"})
             for fact in output.facts:
                 fact = convert(fact)
@@ -298,8 +301,7 @@ def trace(ledger: Ledger, state: ProjectState, fact_id: str) -> dict[str, Any]:
     path = ledger.root / "datasheets" / sheet["fields"].get("file", "")
     snippet = ""
     if path.is_file():
-        texts = ds.page_texts(path)
-        text = texts[f["page"] - 1] if 0 < f["page"] <= len(texts) else ""
+        text = ds.page_text(path, f["page"])
         squashed_quote = re.sub(r"\s+", " ", f["quote"]).strip()
         flat = re.sub(r"\s+", " ", text)
         at = flat.lower().find(squashed_quote.lower()[:40])

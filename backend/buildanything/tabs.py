@@ -245,9 +245,24 @@ def clean_reads(raw: Any) -> list[dict[str, str]]:
 SKIP_DIRS = {".venv", "node_modules", ".git", "retired", "__pycache__", ".pio", "dist", "build"}
 
 
+_SIMILAR: dict[tuple[str, str, int], tuple[float, list[str]]] = {}
+
+
 def similar_files(project_root: Path, pattern: str, limit: int = 6) -> list[str]:
     """Project files of the same type as a tab's read that the tab doesn't find, such as robot/Desk/Desk.urdf when the
-    tab looks for robot/robot.urdf: the sign that the tab was written for another project's layout."""
+    tab looks for robot/robot.urdf: the sign that the tab was written for another project's layout. Remembered for 30 s."""
+    import time
+
+    key = (str(project_root), pattern, limit)
+    known = _SIMILAR.get(key)
+    if known and time.monotonic() - known[0] < 30:
+        return list(known[1])
+    found = _similar_files(project_root, pattern, limit)
+    _SIMILAR[key] = (time.monotonic(), found)
+    return list(found)
+
+
+def _similar_files(project_root: Path, pattern: str, limit: int) -> list[str]:
     suffix = Path(pattern.replace("*", "x")).suffix.lower()
     if not suffix or suffix == ".x":
         return []

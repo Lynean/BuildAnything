@@ -167,16 +167,35 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             raise HTTPException(400, str(exc)) from exc
 
     services = hq.Services(paper_index, registry)
+
+    @app.on_event("startup")
+    async def record_freezes() -> None:
+        """Notes what the server was doing whenever it stops answering for more than two seconds."""
+        if autorun:
+            from . import freezes
+
+            freezes.start(root / "_app" / "logs" / "freezes.log")
     terminal_box = terminals.Terminals()
     running: dict[str, asyncio.Task] = {}
 
+    checking: set[str] = set()
+
     def kick(project_id: str) -> None:
-        """Headquarters looks for the next step after anything changes. It must be called from the event loop."""
-        if not autorun or (running.get(project_id) and not running[project_id].done()):
+        """Headquarters looks for the next step after anything changes. It must be called from the event loop; the check
+        itself runs in a worker thread, so no other request waits for it."""
+        if not autorun or (running.get(project_id) and not running[project_id].done()) or project_id in checking:
             return
         led = ledger(project_id)
-        if hq.next_action(led) is not None:
-            running[project_id] = asyncio.create_task(hq.advance(led, gateway(led), services, lambda work: guarded(project_id, work)))
+        checking.add(project_id)
+
+        async def check() -> None:
+            try:
+                if await asyncio.to_thread(hq.next_action, led) is not None and not (running.get(project_id) and not running[project_id].done()):
+                    running[project_id] = asyncio.create_task(hq.advance(led, gateway(led), services, lambda work: guarded(project_id, work)))
+            finally:
+                checking.discard(project_id)
+
+        asyncio.create_task(check())
 
     def current_label(led: Ledger, project_id: str) -> str | None:
         task = running.get(project_id)
@@ -416,6 +435,19 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
         shape_call(lambda: gates.mark_criterion(led, gate, index, body.get("met", True) is not False, str(body.get("note", "")), Actor.human()))
         return {"ok": True}
 
+    @app.post("/api/projects/{project_id}/gates/{gate}/criteria/{index}/proposal")
+    def gate_criterion_proposal(project_id: str, gate: str, index: int, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """The person agrees with Headquarters' check of a stage requirement (which ticks it, with the reason kept), or turns it down."""
+        led = ledger(project_id)
+        proposal = gates.criterion_proposals(led.events(), gate).get(index)
+        if not proposal:
+            raise HTTPException(404, "Headquarters hasn't checked this one.")
+        if body.get("accept") is True:
+            shape_call(lambda: gates.mark_criterion(led, gate, index, True, f"Agreed with Headquarters: {proposal['reason']}", Actor.human()))
+        else:
+            led.append(Actor.human(), "criterion.proposal_rejected", gate=gate, index=index, reason=str(body.get("reason", "")).strip()[:400])
+        return {"ok": True}
+
     @app.post("/api/projects/{project_id}/departments/{department}/command")
     def department_command(project_id: str, department: str, body: dict[str, Any] = Body(...)) -> dict[str, bool]:
         kind, reason = str(body.get("type", "")), str(body.get("reason", "")).strip()
@@ -550,6 +582,8 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             raise HTTPException(404, "Record not found.")
         if record["type"] == "finding":
             raise HTTPException(400, "Use the finding's own decision buttons.")
+        if record["status"] == "superseded":
+            raise HTTPException(409, "That was replaced by a newer version. Refresh to see the current one.")
         led.append(Actor.human(), kind, id=record_id)
         return output(project_id, led)
 
@@ -705,6 +739,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
     async def services_decide(request_id: str, decision: str, body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
         if decision == "approve":
             await asyncio.to_thread(lambda: service_call(lambda: installs.approve(request_id, Actor.human(), project_roots())))
+            reception.settle_answered(app_ledger, "install", request_id, "install")
         elif decision == "reject":
             service_call(lambda: installs.reject(request_id, str(body.get("reason", "")), Actor.human()))
         else:
@@ -715,6 +750,8 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
     async def services_decide_tool(tool_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         """Only a person adds a tool an agent proposed."""
         service_call(lambda: reception.decide_tool(app_ledger, tool_id, body.get("approve") is True, str(body.get("reason", "")), Actor.human()))
+        if body.get("approve") is True:
+            reception.settle_answered(app_ledger, "tool", tool_id, "tool")
         return await asyncio.to_thread(services_view, str(body.get("project", "")), True)
 
     # ---- Skills, hand-offs and each department's capabilities ----
@@ -796,6 +833,8 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             skill = skillbook.decide(app_ledger, skill_id, body.get("approve") is True, str(body.get("reason", "")), Actor.human())
         except skillbook.SkillError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if body.get("approve") is True:
+            reception.settle_answered(app_ledger, "skill", skill_id, "Skill")
         project = project_roots().get(str(body.get("project", "")))
         if project and body.get("approve") is True:
             led = Ledger(project)
@@ -831,6 +870,8 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
         """Only a person approves a tab. Approving can also show it on the open project straight away."""
         approve = body.get("approve") is True
         tab_call(lambda: tabkit.decide(app_ledger.root, app_ledger, tab_id, approve, str(body.get("reason", "")), Actor.human()))
+        if approve:
+            reception.settle_answered(app_ledger, "tab", tab_id, "tab")
         if approve and body.get("project") in project_roots():
             tabkit.set_shown(app_ledger, tab_id, str(body["project"]), True, Actor.human())
         return tabs_view()
@@ -896,6 +937,8 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
     def connection_decide(conn_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         """Only a person approves a connection: where it goes and every operation it may run."""
         cloud_call(lambda: cloud_store.decide(conn_id, body.get("approve") is True, str(body.get("reason", "")), Actor.human()))
+        if body.get("approve") is True:
+            reception.settle_answered(app_ledger, "connection", conn_id, "connection")
         return connections_view()
 
     @app.post("/api/connections/{conn_id}/key")
@@ -1077,12 +1120,13 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             except Exception as exc:  # noqa: BLE001
                 return {"error": str(exc)[:400]}
 
-        def propose_connection(connection_json: str, why: str) -> dict[str, Any]:
-            """Propose a connection to an outside service, following the Service-connector Skill: a JSON object with id, name, summary, kind (api or mcp), base_url or mcp_target, fields, auth, setup, departments, operations and check. The person approves it."""
+        def propose_connection(connection_json: str, why: str, answers: str = "") -> dict[str, Any]:
+            """Propose a connection to an outside service, following the Service-connector Skill: a JSON object with id, name, summary, kind (api or mcp), base_url or mcp_target, fields, auth, setup, departments, operations and check. The person approves it. answers: the ids of the department requests (from open_asks) this provides, comma-separated, so approving it closes them."""
             try:
                 made = cloud_store.propose(json.loads(connection_json), why, Actor.agent(f"{side}_service"))
             except (ValueError, cloud.CloudError) as exc:
                 return {"error": str(exc)}
+            reception.link_answers(app_ledger, "connection", str(made.get("id", "")), answers)
             return {"proposed": made["name"], "operations": [o["name"] for o in made["operations"]], "note": "It waits on this screen, under Connections, for the person to approve it. Then guide them through the setup steps and the key fields."}
 
         def connections() -> list[dict[str, Any]]:
@@ -1130,7 +1174,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             report["clean"] = not report["rules"] and report["compile"]["ok"] and report.get("render", {}).get("ok", False) and report.get("data_script", {}).get("ok", True) is not False
             return report
 
-        def propose_tab(tab_id: str, tool: str, department: str, title: str, summary: str, exe: str, why: str, reads_json: str = "[]") -> dict[str, Any]:
+        def propose_tab(tab_id: str, tool: str, department: str, title: str, summary: str, exe: str, why: str, reads_json: str = "[]", answers: str = "") -> dict[str, Any]:
             """Propose a built tab for the person to approve. department: Mechanical, Electrical, Software or Procurement. title: its name in the tab row (2-24 characters). exe: the one program its data script runs with tool.run, such as kicad-cli or matlab, or empty.
             reads_json declares every project file the tab reads, as a JSON list of {"path": a glob relative to the project such as "mechanics/sim/runs/*.json", "what": what it is, "made_by": the department that makes it, or "Person"}. Once the tab is shown on a project, each department that makes missing files is told to make them at exactly those paths."""
             try:
@@ -1141,6 +1185,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
                 meta = tabkit.propose(app_ledger.root, app_ledger, tab_id, tool, department, title, summary, exe, why, Actor.agent(f"{side}_service"), reads=reads)
             except tabkit.TabError as exc:
                 return {"error": str(exc)}
+            reception.link_answers(app_ledger, "tab", tab_id, answers)
             return {"proposed": meta["title"], "department": meta["department"], "program": meta["exe"] or "none", "note": "It waits at Reception, under Tool tabs, for the person to approve it and choose which projects show it."}
 
         def project_environment() -> dict[str, Any]:
@@ -1151,19 +1196,24 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             """What departments asked Reception for."""
             return reception.asks(app_ledger)
 
-        def propose_install(tool_id: str, why: str, packages: str = "") -> dict[str, Any]:
-            """Propose an install for the person to approve: tool_id 'project-python' with packages as a comma-separated list for the open project's Python environment, or the id of a program or toolchain the person approved (see programs) to install it the way it was defined."""
+        def propose_install(tool_id: str, why: str, packages: str = "", answers: str = "") -> dict[str, Any]:
+            """Propose an install for the person to approve: tool_id 'project-python' with packages as a comma-separated list for the open project's Python environment, or the id of a program or toolchain the person approved (see programs) to install it the way it was defined. answers: the ids of the department requests (from open_asks) this provides, comma-separated, so approving it closes them."""
             try:
                 made = installs.propose(tool_id, led.root, [p for p in packages.split(",") if p.strip()] or None, why, Actor.agent(f"{side}_service"))
             except reception.ServiceError as exc:
                 return {"error": str(exc)}
+            reception.link_answers(app_ledger, "install", made["id"], answers)
             return {"proposed": made["title"], "note": "It's waiting for the person's approval on this screen."}
 
         def search_winget(name: str) -> list[str]:
             """Read-only: what winget lists for a program name, with its exact id. Use it before proposing a winget install of a new tool."""
             return reception.winget_search(name)
 
-        def propose_tool(tool_id: str, group: str, name: str, what: str, check_kind: str, check_value: str, get_kind: str, get_value: str, why: str, capabilities: str = "") -> dict[str, Any]:
+        def propose_tool(tool_id: str, group: str, name: str, what: str, check_kind: str, check_value: str, get_kind: str, get_value: str, why: str, capabilities: str = "", answers: str = "") -> dict[str, Any]:
+            reception.link_answers(app_ledger, "tool", tool_id.strip(), answers)
+            return _propose_tool(tool_id, group, name, what, check_kind, check_value, get_kind, get_value, why, capabilities)
+
+        def _propose_tool(tool_id: str, group: str, name: str, what: str, check_kind: str, check_value: str, get_kind: str, get_value: str, why: str, capabilities: str = "") -> dict[str, Any]:
             """Propose adding a tool the app doesn't list yet, for the person to approve. tool_id: short lowercase id such as roblox-studio. group: cloud, app or platform.
             check_kind/check_value: exe + a program name on PATH, file + a path starting with %LOCALAPPDATA%, %PROGRAMFILES% or similar (* allowed), key (for an API key; check_value empty), or python + a module name.
             get_kind/get_value: winget + an exact id from search_winget; command + a JSON list running an installer that's already on this computer, such as ["sdkmanager", "platform-tools", "platforms;android-34"]; pip + a package; key + the https page where the key is made; or steps + instructions for the person separated by ' | '.
@@ -1187,7 +1237,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
 
         opened: dict[str, str] = {}
 
-        async def write_skill(tool_id: str, departments: str, title: str, summary: str, content: str, sources: str) -> dict[str, Any]:
+        async def write_skill(tool_id: str, departments: str, title: str, summary: str, content: str, sources: str, answers: str = "") -> dict[str, Any]:
             """Write a Skill: a guide in Markdown for one department's agent on using a tool the person operates themselves. departments: comma-separated, such as Electrical.
             content: what the tool is for, how its scripting or files work with short real examples, what agents can and can't do, and how to guide the person through running a script and reporting back.
             sources: comma-separated https pages it's based on. The person approves it before the department sees it."""
@@ -1195,6 +1245,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
                 made = skillbook.write(app_ledger, tool_id, [d.strip() for d in departments.split(",")], title, summary, content, sources.split(","), Actor.agent(f"{side}_service"), set(opened))
             except skillbook.SkillError as exc:
                 return {"error": str(exc)}
+            reception.link_answers(app_ledger, "skill", made["id"], answers)
             excerpts = "\n\n".join(f"### {u}\n{opened.get(u.strip(), '(never opened)')[:12000]}" for u in sources.split(",") if u.strip())  # enough of each page that steps further down count as supported
             verdict: skillbook.SkillVerdict = await gateway(led).run(agent="skill_reviewer", output_type=skillbook.SkillVerdict, values={"skill": f"Tool: {tool_id}. For: {departments}. Title: {title}\n\n{content}", "sources": excerpts}, request_limit=3)
             skillbook.record_review(app_ledger, made["id"], verdict)
@@ -1252,7 +1303,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
 
         tools = [open_asks, read_example, write_tab_file, read_tab_files, build_tab, propose_tab, dismiss_tab_idea] + ([project_environment, propose_install, check_program, programs, search_winget, propose_tool] if side == "internal" else [WebSearchTool(), open_web_page, write_skill, send_guidance, mcp_server_tools, propose_connection, connections, call_service])
         threaded = tools
-        earlier = "\n".join(f"{m['role']}: {m['text'][:600]}" for m in service_messages(side)[-10:])
+        earlier = hq.remembered([{"role": m["role"], "text": m["text"][:600]} for m in (e["data"] for e in app_ledger.events() if e["kind"] == "service.message" and e["data"]["side"] == side)])
         state = led.state()
         ideas = [{k: v for k, v in c.items() if k != "weight"} for c in tabideas.candidates(app_ledger.root, app_ledger, led.root, shape.team(state))]
         values = {"message": message, "project": f"{state.meta.get('name')} (team: {', '.join(shape.team(state))})", "earlier": earlier, "skills": tabkit.builtin_skills(connector=side == "external"),

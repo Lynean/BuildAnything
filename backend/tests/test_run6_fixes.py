@@ -209,12 +209,205 @@ def test_a_project_can_be_disconnected_and_connected_again_without_touching_its_
     assert [p["id"] for p in client.get("/api/projects").json()] == [pid]
 
 
-def test_a_department_can_offer_the_person_choices(tmp_path):
+def test_agents_ask_all_their_questions_at_once_with_options(tmp_path):
     from buildanything import headquarters as hq, protocol
     from buildanything.agent_specs import SPECS, system_prompt
 
     led = Ledger(tmp_path / "p")
-    hq._say(led, "Mechanical", "agent", "Which caster?", choices=["Ball caster", "Swivel wheel", "", "a", "b", "c"])
-    assert hq.thread(led.events(), "Mechanical")[-1]["choices"] == ["Ball caster", "Swivel wheel", "a", "b"]
-    assert "choices" in protocol.Report.model_fields
-    assert "numbered list" in system_prompt(SPECS["concept"]) and "in choices" in system_prompt(SPECS["lead_mechanical"])
+    asked = [protocol.Question(question="Which caster?", options=["Ball caster", "Swivel wheel", "Ball caster"]),
+             protocol.Question(question="Battery?", options=["4xAA"]),  # one option is no choice: dropped
+             protocol.Question(question="Colour?", options=["Black", "White", "Red", "Blue", "Green"])]
+    hq._say(led, "Mechanical", "agent", "Two things to decide.", questions=asked)
+    stored = hq.thread(led.events(), "Mechanical")[-1]["questions"]
+    assert stored == [{"question": "Which caster?", "options": ["Ball caster", "Swivel wheel"]}, {"question": "Colour?", "options": ["Black", "White", "Red", "Blue"]}]
+    assert "questions" in protocol.Report.model_fields
+    assert "all at once" in system_prompt(SPECS["concept"]) and "all together" in system_prompt(SPECS["lead_mechanical"])
+
+
+def test_the_concept_partner_sees_everything_the_person_said_however_long_the_chat(tmp_path):
+    import asyncio
+    from buildanything import agents
+
+    led = Ledger(tmp_path / "p")
+    led.append(Actor.human(), "project.created", name="Ring", aim="A ring mouse", scope="")
+    for i in range(10):
+        led.propose(Actor.agent("concept"), "concept_draft", message=f"answer {i}", reply="ok", summary="s", decisions=[f"d{i}"], open_questions=[], speculative=True)
+    seen = {}
+
+    class Model:
+        async def run(self, agent, values, output_type, **kwargs):
+            seen.update(values)
+            return output_type(reply="r", summary="s", decisions=["d9"], open_questions=[])
+
+    asyncio.run(agents.run_concept(led, Model(), "next"))
+    assert seen["settled"]["everything_the_person_said"] == [f"answer {i}" for i in range(10)]  # not just the last six
+    assert seen["settled"]["decisions_so_far"] == ["d9"]
+
+
+def test_leads_and_service_agents_remember_everything_the_person_said():
+    from buildanything import headquarters as hq
+
+    talk = [{"role": "you" if i % 2 == 0 else "agent", "text": f"msg {i}", "from": None} for i in range(40)]
+    text = hq.remembered(talk)
+    assert "- msg 0" in text and "- msg 38" in text and "msg 39" in text  # the earliest answer survives, the latest exchanges in full
+    assert hq.remembered(talk[:3]) == "\n\n".join(f"{m['role']}: {m['text']}" for m in talk[:3])  # a short chat stays as it is
+
+
+def test_headquarters_files_its_own_tasks_and_only_requirements_wait_for_the_person(tmp_path):
+    from buildanything import agents, gates
+
+    led = Ledger(tmp_path / "p")
+    task_id = agents.add_task(led, Actor.agent("controller"), key="M1", department="Mechanical", title="Design the ring", depends_on=[], start_week=0)
+    assert led.state().records[task_id]["status"] == "confirmed"
+    led.propose(Actor.agent("controller"), "requirement", key="R1", text="It clicks.", verification="Click it.", person_said="", added_because="x")
+    asked = [t for _, t in gates.check("plan", led.state(), led)]
+    assert asked == ["Confirm the requirements.", "Review 1 remaining requirements."]
+
+
+def test_a_stage_check_shows_the_requirements_that_bear_on_it(tmp_path):
+    from buildanything import gates
+
+    led = Ledger(tmp_path / "p")
+    led.propose(Actor.agent("controller"), "requirement", key="R6", text="ToF shall be investigated if more than 5% of mode transitions are missed.", verification="Count misses.", person_said="", added_because="x")
+    led.propose(Actor.agent("controller"), "requirement", key="R1", text="The ring clicks.", verification="Click.", person_said="", added_because="x")
+    found = gates.criterion_evidence(led.state(), led.events(), "The ToF investigation trigger is recorded.")
+    assert [e["label"] for e in found] == ["R6"]
+
+
+def test_headquarters_checks_a_stage_requirement_and_the_person_agrees_with_one_click(tmp_path, monkeypatch):
+    import asyncio
+    from buildanything import agents, gates
+
+    led = Ledger(tmp_path / "p")
+    led.propose(Actor.agent("controller"), "requirement", key="R6", text="ToF shall be investigated if more than 5% of mode transitions are missed.", verification="Count.", person_said="", added_because="x")
+    monkeypatch.setattr(gates, "entry", lambda state, gate: {"criteria": ["The ToF investigation trigger is recorded."]})
+    monkeypatch.setattr(gates, "stage", lambda gate, state=None: "Plan")
+    assert gates.criteria_unchecked(led.state(), led.events(), "G2") == [0]
+
+    class Model:
+        async def run(self, agent, values, output_type, **kwargs):
+            assert agent == "criteria_reviewer" and values["criteria"][0]["related"][0]["label"] == "R6"
+            return output_type(verdicts=[agents.CriterionVerdict(index=0, met=True, reason="R6 records the trigger.")])
+
+    asyncio.run(agents.run_criteria_check(led, Model(), "G2"))
+    view = gates.criteria_view(led.state(), "G2", led.events())[0]
+    assert view["proposal"]["met"] and view["proposal"]["reason"] == "R6 records the trigger."
+    assert gates.criteria_unchecked(led.state(), led.events(), "G2") == []  # checked against what the project has now
+    gates.mark_criterion(led, "G2", 0, True, "Agreed with Headquarters: R6 records the trigger.", Actor.human())
+    ticked = gates.criteria_view(led.state(), "G2", led.events())[0]
+    assert ticked["met"] and "proposal" not in ticked and ticked["basedOn"]
+    with __import__("pytest").raises(Exception):
+        led.append(Actor.agent("criteria_reviewer"), "gate.criterion_met", gate="G2", index=0, met=True, note="x", text="t")  # never by an agent
+
+
+def test_one_page_of_a_long_document_is_read_without_reading_the_rest(tmp_path, monkeypatch):
+    from buildanything import datasheets as ds
+
+    opened = []
+
+    class Page:
+        def __init__(self, n):
+            self.n = n
+
+        def extract_text(self):
+            opened.append(self.n)
+            return f"page {self.n}"
+
+    class Reader:
+        def __init__(self, path):
+            self.pages = [Page(i + 1) for i in range(600)]
+
+    monkeypatch.setattr(ds, "PdfReader", Reader)
+    pdf = tmp_path / "manual.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    assert ds.page_text(pdf, 409) == "page 409" and opened == [409]
+    assert ds.page_text(pdf, 409) == "page 409" and opened == [409]  # remembered
+
+
+def test_documents_get_readable_names_and_old_ones_are_renamed_with_their_references(tmp_path):
+    from buildanything import datasheets as ds
+
+    assert ds.readable_name("XIAO nRF52840 (Sense)", "user_manual", "0ce32d92af") == "XIAO-nRF52840-user-manual-0ce32d.pdf"
+    led = Ledger(tmp_path / "p")
+    cid = led.propose(Actor.human(), "component", part_number="BMI270", role="IMU")
+    (led.root / "datasheets").mkdir(parents=True)
+    old = f"{cid}-1cec202595.pdf"
+    (led.root / "datasheets" / old).write_bytes(b"%PDF")
+    sheet = led.propose(Actor.human(), "datasheet", component=cid, file=old, filename="bmi270.pdf", pages=1, part_match=True, doc="datasheet")
+    note = led.propose(Actor.human(), "page_note", component=cid, part="BMI270", datasheet=sheet, file=old, page=1, finding="x", why="y")
+    assert ds.rename_documents(led) == [(old, "BMI270-datasheet-1cec20.pdf")]
+    state = led.state()
+    assert state.records[sheet]["fields"]["file"] == state.records[note]["fields"]["file"] == "BMI270-datasheet-1cec20.pdf"
+    assert (led.root / "datasheets" / "BMI270-datasheet-1cec20.pdf").exists() and not (led.root / "datasheets" / old).exists()
+    assert ds.rename_documents(led) == []  # only once
+
+
+def test_measurements_that_need_the_built_hardware_wait_for_build_instead_of_blocking(tmp_path):
+    from buildanything import gatereport, headquarters as hq, protocol, traceability
+    from buildanything.agent_specs import SPECS, system_prompt
+
+    led = Ledger(tmp_path / "p")
+    report = protocol.Report(type="DONE", done=["Battery chosen"], not_checked=[], provisional=["8 h battery life"], needs=[], risk="", severity="none", safety=False,
+                             for_person="Battery chosen; life measured after Build.", after_build=["Battery life: 8 h provisional; measure with a USB power meter over a full charge; pass if 8 h or more"])
+    hq._act_on_report(led, "Electrical", protocol.command("TASK", ["Choose the battery"]), report, False)
+    later = traceability.after_build(led)
+    assert later[0]["department"] == "Electrical" and "USB power meter" in later[0]["items"][0]
+    assert not hq.own_remaining(led.events(), "Electrical")  # nothing for Headquarters to chase before Build
+    built = [t for d, t in gatereport._build_and_bring_up(led, led.state()) if d == "Electrical"]
+    assert built and "Battery life" in built[0]  # at Build it becomes the department's work
+    assert "after_build" in system_prompt(SPECS["lead_electrical"])
+
+
+def test_a_save_extends_the_remembered_record_and_callers_still_get_their_own_copies(tmp_path):
+    led = Ledger(tmp_path / "p")
+    led.append(Actor.human(), "project.created", name="R", aim="A", scope="")
+    first = led.events()
+    first[0]["data"]["name"] = "changed by a caller"  # must not leak into what the next caller sees
+    led.append(Actor.human(), "dept.message", department="Software", role="you", text="hi")
+    again = led.events()
+    assert [e["kind"] for e in again] == ["project.created", "dept.message"] and again[0]["data"]["name"] == "R"
+    assert led.state().meta["name"] == "R" and Ledger(tmp_path / "p").events()[-1]["data"]["text"] == "hi"
+
+
+def test_a_stuck_main_loop_is_recorded_with_what_it_was_doing(tmp_path, monkeypatch):
+    import asyncio, time
+    from buildanything import freezes
+
+    monkeypatch.setattr(freezes, "STUCK_SECONDS", 0.6)
+    log = tmp_path / "freezes.log"
+
+    def slow_work():
+        time.sleep(1.6)  # a heavy step on the main loop
+
+    async def main():
+        freezes.start(log)
+        await asyncio.sleep(0.7)
+        slow_work()
+        await asyncio.sleep(0.2)
+
+    asyncio.run(main())
+    assert "slow_work" in log.read_text(encoding="utf-8")
+
+
+def test_a_screen_showing_an_older_list_cannot_bring_back_a_replaced_connection(tmp_path):
+    import pytest
+    from buildanything.ledger import LedgerError
+
+    led = Ledger(tmp_path / "p")
+    old = led.propose(Actor.agent("electrical"), "net", name="IMU_SCL", kind="i2c", nominal_v=3.3, members=[])
+    led.append(Actor.system("electrical"), "record.superseded", id=old)  # a newer draft replaced it
+    with pytest.raises(LedgerError, match="replaced"):
+        led.append(Actor.human(), "record.confirmed", id=old)
+    assert led.state().records[old]["status"] == "superseded"
+
+
+def test_approving_what_a_service_agent_proposed_closes_the_requests_it_answers(tmp_path):
+    from buildanything import services
+
+    app = Ledger(tmp_path / "_app")
+    services.ask(app, "ring", "Software", "Firmware size measurement", "Measure compiled flash and RAM use on the XIAO")
+    services.ask(app, "ring", "Procurement", "Edit buying list", "Merge the duplicate purchase line after the approved change")
+    first = services.asks(app)[0]["id"]
+    assert services.link_answers(app, "install", "ins_1", f"{first}, not-a-request") == [first]
+    assert services.settle_answered(app, "install", "ins_1", "install") == 1
+    assert [a["department"] for a in services.asks(app)] == ["Procurement"]

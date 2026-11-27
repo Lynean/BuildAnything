@@ -1329,3 +1329,15 @@ input[type="checkbox"], input[type="radio"], .row input[type="checkbox"], .row i
 .terminal-in input { flex: 1; background: transparent; border: 0; outline: none; color: #e4e8ef; font: 13px ui-monospace, Consolas, monospace; }
 .settings .setting { display: grid; gap: 4px; padding: 10px 0; border-top: 1px solid var(--line); }
 .settings .setting:first-of-type { border-top: 0; }
+
+.question-form { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 2px; }
+.question-form .question { border: 0; padding: 0; margin: 0; }
+.question-form legend { margin-bottom: 6px; }
+.agent-choice.on { border-color: var(--ai); background: color-mix(in srgb, var(--ai) 12%, transparent); }
+.question-own { min-width: 240px; max-width: 100%; }
+
+.criterion-evidence { margin: 4px 0 8px 26px; font-size: 13px; color: var(--ink-2, inherit); }
+.criterion-evidence li { margin: 2px 0; }
+.criterion-why { margin: 4px 0 8px 26px; font-size: 13px; }
+.criterion-proposal { margin: 4px 0 6px 26px; padding: 6px 10px; border-left: 3px solid var(--ai); font-size: 13px; }
+.criterion-proposal.no { border-left-color: var(--warn, #c98a00); }

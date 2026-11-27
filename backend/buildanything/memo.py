@@ -13,7 +13,7 @@ SKIP = {".pio", "node_modules", "__pycache__", ".git"}
 
 
 def _fingerprint(ledger: Ledger) -> str:
-    digest = hashlib.sha256(ledger.path.read_bytes() if ledger.path.exists() else b"")
+    digest = hashlib.sha256(ledger._key() if ledger.path.exists() else b"")  # the record's hash, re-read only when it changed
     for folder in ("firmware", "parts"):
         for path, dirs, files in os.walk(ledger.root / folder):
             dirs[:] = sorted(d for d in dirs if d not in SKIP)

@@ -23,6 +23,22 @@ class Need(BaseModel):
     what: str = Field(description="Exactly what is needed, in one sentence")
 
 
+class Question(BaseModel):
+    question: str = Field(description="One short question for the person")
+    options: list[str] = Field(description="2 to 4 short answers they could pick as they are, your recommended one first. They can always type their own")
+
+
+def clean_questions(questions: list[Question] | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """At most six questions, each with two to four distinct options, as stored on a message."""
+    out = []
+    for q in questions[:6]:
+        q = q.model_dump() if isinstance(q, BaseModel) else q
+        options = list(dict.fromkeys(o.strip()[:200] for o in q.get("options", []) if str(o).strip()))[:4]
+        if str(q.get("question", "")).strip() and len(options) >= 2:
+            out.append({"question": q["question"].strip()[:300], "options": options})
+    return out
+
+
 class Report(BaseModel):
     type: ReportType = Field(description="DONE: all of it finished. PARTIAL: some finished. BLOCKED: can't continue, and needs says on whom. ANSWER: a reply to a QUESTION. REQUEST: you need another department's work. CHANGE_REQUEST: you raised one. RISK: a safety or design concern. BUG: a tool or generated code is broken")
     done: list[str] = Field(description="What you actually finished, each as a short fact. Empty if nothing")
@@ -35,7 +51,8 @@ class Report(BaseModel):
     safety: bool = Field(description="True if the RISK could hurt someone")
     for_person: str = Field(description="What the person reads: one or two plain sentences, at most 50 words. What changed and the one thing they need to do, if any. No tables, lists or links")
     details: str = Field(default="", description="Tables, sources and reasoning, in Markdown. Shown only if the person opens it. Empty if there's nothing to add")
-    choices: list[str] = Field(default_factory=list, description="When the person must decide something: 2 to 4 short answers they could send as they are, recommended first. They can also type their own. Empty otherwise")
+    after_build: list[str] = Field(default_factory=list, description="Everything that can only be measured or proven on the built hardware, each with the provisional value you're using now and how it will be measured: equipment, method and pass limit. It isn't owed before Build, so it never goes in needs and never makes a report PARTIAL or BLOCKED. List all of them each time")
+    questions: list[Question] = Field(default_factory=list, description="Everything you need the person to decide now, all together (up to 6), each with 2 to 4 options. Empty when there's nothing to decide")
 
 
 def command(kind: str, items: list[str] | None = None, done_when: str = "", reason: str = "") -> dict[str, Any]:

@@ -171,13 +171,87 @@ def validate_plan(state: ProjectState, gates: list[dict[str, Any]]) -> list[dict
     return out
 
 
-def criteria_view(state: ProjectState, gate: str) -> list[dict[str, Any]]:
+_FILLER = {"the", "a", "an", "and", "or", "of", "to", "is", "are", "be", "it", "its", "in", "on", "for", "with", "by", "this", "that", "has", "have",
+           "been", "was", "were", "documented", "recorded", "written", "defined", "agreed", "done", "met", "ready", "all", "each", "every", "any"}
+
+
+def _stems(text: str) -> set[str]:
+    words = set()
+    for w in re.findall(r"[a-z0-9]+", text.lower()):
+        if len(w) > 2 and w not in _FILLER:
+            words.add(w[:6] if len(w) > 6 else w.rstrip("s"))  # "investigated" and "investigation" count as one word
+    return words
+
+
+def criterion_evidence(state: ProjectState, events: list[dict[str, Any]], text: str, limit: int = 4) -> list[dict[str, str]]:
+    """What in the project bears on a stage requirement the person ticks: the requirements, decisions and tasks that
+    match its words, and the latest department message about it. So they can judge it without searching."""
+    want = _stems(text)
+    if not want:
+        return []
+    need = 1 if len(want) <= 2 else 2
+    found: list[tuple[int, dict[str, str]]] = []
+
+    def consider(kind: str, label: str, body: str) -> None:
+        score = len(want & _stems(body))
+        if score >= need:
+            found.append((score, {"kind": kind, "label": label, "text": body.strip()[:400]}))
+
+    for r in state.of_type("requirement"):
+        if r["status"] in ("proposed", "confirmed"):
+            consider("Requirement", r["fields"].get("key", ""), f"{r['fields'].get('text', '')} Checked by: {r['fields'].get('verification', '')}")
+    for d in state.of_type("decision", "confirmed"):
+        consider("Decision", "", d["fields"].get("text", ""))
+    for t in state.of_type("task", "confirmed"):
+        consider("Task", f"{t['fields'].get('key', '')} {t['fields'].get('department', '')}".strip(), t["fields"].get("title", ""))
+    said = [e for e in events if e["kind"] == "dept.message" and e["data"].get("role") == "agent"]
+    for e in reversed(said[-80:]):
+        d = e["data"]
+        before = len(found)
+        consider("Latest from " + d.get("department", ""), e["at"][:10], f"{d.get('text', '')} {d.get('details', '')[:1500]}")
+        if len(found) > before:
+            break  # only the newest matching message
+    found.sort(key=lambda x: -x[0])
+    return [item for _score, item in found[:limit]]
+
+
+def criterion_fingerprint(state: ProjectState, events: list[dict[str, Any]], text: str) -> str:
+    """Changes when the stage requirement's wording or what the project has for it changes, so Headquarters checks again."""
+    import hashlib
+    import json
+
+    return hashlib.sha256(json.dumps([text, criterion_evidence(state, events, text, limit=8)], sort_keys=True).encode()).hexdigest()[:12]
+
+
+def criterion_proposals(events: list[dict[str, Any]], gate: str) -> dict[int, dict[str, Any]]:
+    """Headquarters' latest view on each of a gate's own requirements, and whether the person turned it down."""
+    out: dict[int, dict[str, Any]] = {}
+    for e in events:
+        d = e["data"]
+        if e["kind"] == "criterion.proposed" and d["gate"] == gate:
+            out[d["index"]] = {**d, "rejected": ""}
+        elif e["kind"] == "criterion.proposal_rejected" and d["gate"] == gate and d["index"] in out:
+            out[d["index"]]["rejected"] = d.get("reason", "") or "Turned down."
+    return out
+
+
+def criteria_unchecked(state: ProjectState, events: list[dict[str, Any]], gate: str) -> list[int]:
+    """Unticked requirements of this gate that Headquarters hasn't judged against what the project has now."""
+    proposals = criterion_proposals(events, gate)
+    return [c["index"] for c in criteria_view(state, gate) if not c["met"] and (proposals.get(c["index"]) or {}).get("fingerprint") != criterion_fingerprint(state, events, c["text"])]
+
+
+def criteria_view(state: ProjectState, gate: str, events: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     out = []
+    proposals = criterion_proposals(events, gate) if events is not None else {}
     for i, text in enumerate(entry(state, gate).get("criteria", [])):
         met = state.criteria_met.get(f"{gate}:{i}")
         # A tick counts only for the wording it was given against: rewording a requirement asks again.
         ok = bool(met) and met.get("text", text) == text
-        out.append({"index": i, "text": text, "met": ok, **({"note": met["note"], "by": met["by"]} if ok else {})})
+        proposal = proposals.get(i)
+        out.append({"index": i, "text": text, "met": ok, **({"note": met["note"], "by": met["by"], "at": met.get("at", ""), "basedOn": met.get("based_on", [])} if ok else {}),
+                    **({"evidence": criterion_evidence(state, events, text)} if events is not None else {}),
+                    **({"proposal": {k: proposal[k] for k in ("met", "reason", "missing", "owner", "rejected")}} if proposal and proposal.get("text") == text and not ok else {})})
     return out
 
 
@@ -191,7 +265,9 @@ def mark_criterion(ledger: Ledger, gate: str, index: int, met: bool, note: str, 
         raise GateError("This gate is already passed.")
     if met and len(note.strip()) < 4:
         raise GateError("Say how you know it's met.")
-    ledger.append(actor, "gate.criterion_met", gate=gate, index=index, met=bool(met), note=note.strip(), text=criteria[index])
+    # what the project showed for it at that moment, so the reason for the tick stays readable later
+    based_on = [f"{e['kind']}{' ' + e['label'] if e['label'] else ''}: {e['text'][:200]}" for e in criterion_evidence(state, ledger.events(), criteria[index])] if met else []
+    ledger.append(actor, "gate.criterion_met", gate=gate, index=index, met=bool(met), note=note.strip(), text=criteria[index], based_on=based_on)
 
 
 def open_findings_to_decide(state: ProjectState) -> list[dict]:
@@ -250,11 +326,9 @@ def check(key: str, state: ProjectState, ledger: Ledger | None) -> list[tuple[st
         out = []
         if not state.of_type("requirement", "confirmed"):
             out.append((YOU, "Confirm the requirements."))
-        if not state.of_type("task", "confirmed"):
-            out.append((YOU, "Confirm the task plan."))
-        unconfirmed = state.of_type("requirement", "proposed") + state.of_type("task", "proposed")
+        unconfirmed = state.of_type("requirement", "proposed")
         if unconfirmed:
-            out.append((YOU, f"Review {len(unconfirmed)} remaining requirements and tasks."))
+            out.append((YOU, f"Review {len(unconfirmed)} remaining requirements."))
         return out
     if key == "verifier":
         out = []

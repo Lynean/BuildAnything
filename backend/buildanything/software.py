@@ -374,8 +374,42 @@ def _imports(tree: ast.AST) -> set[str]:
     return names
 
 
+_UNCONNECTED: dict[tuple[str, tuple[str, ...]], tuple[tuple[Any, ...], list[str]]] = {}
+_SKIP_DIRS = {"node_modules", ".venv", "__pycache__", ".git", ".pio", "dist", "build"}
+
+
+def _folder_stamp(base: Path) -> tuple[Any, ...]:
+    """Every file's name, size and time under a program's folder: it changes exactly when the code does."""
+    import os
+
+    out = []
+    for path, dirs, files in os.walk(base):
+        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
+        for name in sorted(files):
+            info = os.stat(os.path.join(path, name))
+            out.append((path, name, info.st_mtime_ns, info.st_size))
+    return tuple(out)
+
+
 def unconnected(root: Path, device: str, written: list[str]) -> list[str]:
-    """New or changed modules that nothing the person starts ever imports or loads. Tests don't count as using them."""
+    """New or changed modules that nothing the person starts ever imports or loads. Tests don't count as using them.
+    Remembered until the program's files change, because saving an answer elsewhere never changes the code."""
+    base = root / "firmware" / device
+    if not base.is_dir():
+        return []
+    key = (str(base), tuple(sorted(written)))
+    stamp = _folder_stamp(base)
+    known = _UNCONNECTED.get(key)
+    if known and known[0] == stamp:
+        return list(known[1])
+    found = _unconnected(root, device, written)
+    if len(_UNCONNECTED) > 200:
+        _UNCONNECTED.clear()
+    _UNCONNECTED[key] = (stamp, found)
+    return list(found)
+
+
+def _unconnected(root: Path, device: str, written: list[str]) -> list[str]:
     base = root / "firmware" / device
     if not base.is_dir():
         return []
@@ -585,10 +619,11 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
             agent="software", output_type=SoftwareOut, tools=read_tools, request_limit=16,
             values={"device": device, "goal": goal, "packets": itf.summary_for_agents(state), "current_code": fw.outline_code(root, device, goal), "components": sorted(fw.component_names(state)), "cad_model": cad_brief(root), "feedback": feedback},
         )
-        merged, kept_problems = fw.merge_unchanged(root, device, fw.normalize_paths(device, output.files))
+        merged, kept_problems = await asyncio.to_thread(fw.merge_unchanged, root, device, fw.normalize_paths(device, output.files))
         output = output.model_copy(update={"files": merged})
-        edited, edit_problems = apply_edits(root, device, output.edits)
-        last = kept_problems + edit_problems + path_problems(output.files) + fw.documentation_problems_host(output.files) + syntax_problems(output.files) + fw.component_problems(output.files, fw.component_names(ledger.state()))
+        edited, edit_problems = await asyncio.to_thread(apply_edits, root, device, output.edits)
+        names = fw.component_names(ledger.state())
+        last = kept_problems + edit_problems + await asyncio.to_thread(lambda: path_problems(output.files) + fw.documentation_problems_host(output.files) + syntax_problems(output.files) + fw.component_problems(output.files, names))
         if not output.files and not output.edits and not last:
             if output.not_done.strip() and attempt < 2:
                 feedback = ("You returned no files and no edits, but you say this isn't done: " + output.not_done.strip()[:600]

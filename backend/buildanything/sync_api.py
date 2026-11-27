@@ -222,7 +222,8 @@ def register(app: FastAPI, root: Path, get_ledger: Callable[[str], Ledger], get_
 
     @app.get("/api/projects/{project_id}/tests")
     def tests_view(project_id: str) -> dict[str, Any]:
-        return traceability.view(get_ledger(project_id))
+        led = get_ledger(project_id)
+        return {**traceability.view(led), "afterBuild": traceability.after_build(led)}
 
     @app.get("/api/projects/{project_id}/tests.csv")
     def tests_csv(project_id: str) -> PlainTextResponse:

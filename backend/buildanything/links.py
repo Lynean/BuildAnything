@@ -181,7 +181,9 @@ def route(ledger: Ledger, issue_id: str, cause: str, device: str, detail: str, a
         debug_id = debugging.open_or_repeat(ledger, f"Link: {issue['title']}", error, "wiring", system, device=device, where=device)["id"]
     elif cause == "antenna_placement":
         to = "Mechanical"
-        ledger.propose(system, "task", key=f"LINK-{issue_id[-4:].upper()}", department="Mechanical", title=f"Review antenna placement: {issue['title']}", weeks=1, depends_on=[], start_week=0)
+        from .agents import add_task
+
+        add_task(ledger, system, key=f"LINK-{issue_id[-4:].upper()}", department="Mechanical", title=f"Review antenna placement: {issue['title']}", depends_on=[], start_week=0)
     else:
         to = "Interface"
     ledger.append(actor, "link.routed", id=issue_id, cause=cause, to=to, label=label, detail=detail.strip(), debug=debug_id)

@@ -216,7 +216,7 @@ def _drive(ledger: Ledger, state: ProjectState, done: set[str], busy: set[str] |
     gate = gates.current_gate(state)
     if gate is None or gates.phase(state, gate) in ("G0", "G1"):
         return None
-    if gates.phase(state, gate) == "G2" and (state.of_type("requirement", "proposed") or state.of_type("task", "proposed") or not state.of_type("task", "confirmed")):
+    if gates.phase(state, gate) == "G2" and (state.of_type("requirement", "proposed") or not state.of_type("task", "confirmed")):
         return None  # in Plan, only once the plan itself is agreed
     events = ledger.events()
     waiting_on_person = {r["from"] for r in requests_view(events) if r["status"] == "waiting_for_you"}
@@ -331,7 +331,26 @@ def _followups_due(events: list[dict[str, Any]]) -> dict[str, list[str]]:
     return out
 
 
+_NEXT: dict[tuple[Any, ...], tuple[float, str | None]] = {}
+NEXT_TTL = 3.0  # seconds: files a step depends on (code, tabs) are re-read at least this often
+
+
 def next_action(ledger: Ledger, running: set[str] | None = None, busy: set[str] | None = None) -> str | None:
+    """Remembered for a few seconds while the project's record is unchanged, because status checks ask often."""
+    import time
+
+    key = (str(ledger.path), ledger._stamp(), frozenset(running or ()), frozenset(busy or ()))
+    known = _NEXT.get(key)
+    if known and time.monotonic() - known[0] < NEXT_TTL:
+        return known[1]
+    action = _next_action(ledger, running, busy)
+    if len(_NEXT) > 200:
+        _NEXT.clear()
+    _NEXT[key] = (time.monotonic(), action)
+    return action
+
+
+def _next_action(ledger: Ledger, running: set[str] | None = None, busy: set[str] | None = None) -> str | None:
     """The next step Headquarters should take. Steps in running are already under way; departments in busy are working,
     so they get nothing new until they finish, while other departments can be started."""
     running, busy = running or set(), busy or set()
@@ -414,6 +433,12 @@ def next_action(ledger: Ledger, running: set[str] | None = None, busy: set[str] 
 
         if not gatereport.blockers(gate, state, ledger) and not running:  # the whole design is reviewed once everyone has stopped
             return f"gate_review:{gate}"
+    if gate and concept_approved(ledger) and not running and not busy:
+        unchecked = gates.criteria_unchecked(state, events, gate)
+        if unchecked:
+            step = f"criteria_check:{gate}:" + "-".join(gates.criterion_fingerprint(state, events, c["text"]) for c in gates.criteria_view(state, gate) if c["index"] in unchecked)
+            if step not in opened:
+                return step
     return None
 
 
@@ -452,7 +477,7 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
         if asked["project"] == ledger.root.name:
             found = [reception.BY_ID[i]["group"] for i in reception.providers_of(asked["capability"])]
             side = "External Service" if found and found[0] in ("cloud", "app") else "Internal Service"
-            out.append({"kind": "tool", "text": f"{asked['department']} needs a tool: {asked['capability']}. {asked['why'][:160]}", "goto": side})
+            out.append({"kind": "tool", "key": asked["id"], "text": f"{asked['department']} needs a tool: {asked['capability']}. {asked['why'][:160]}", "goto": side})
     for asked in shape.requests(ledger):
         out.append({"kind": "team", "text": f"{asked['by'].title()} asks to add {asked['department']} to the team: {asked['why'][:180]}", "goto": "Journey"})
     if not gates.passed(state, "G1"):
@@ -470,7 +495,7 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
     if not gates.passed(state, "G2"):
         if next_action(ledger):
             return out
-        plan = state.of_type("requirement", "proposed") + state.of_type("task", "proposed")
+        plan = state.of_type("requirement", "proposed")
         high = gates.open_high_findings(state)
         undecided = [f for f in gates.open_findings_to_decide(state) if not f.get("decision")]
         if undecided:
@@ -544,7 +569,7 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
 
 def thread(events: list[dict[str, Any]], department: str) -> list[dict[str, Any]]:
     approved = next((i for i, e in enumerate(events) if e["kind"] == "concept.approved"), -1)
-    return [{"role": e["data"]["role"], "text": e["data"]["text"], "from": e["data"].get("from"), "at": e["at"], "early": i < approved, "details": e["data"].get("details", ""), "choices": e["data"].get("choices", []), "internal": bool(e["data"].get("internal")) or (e["data"]["role"] == "request" and e["data"].get("from") != "You")} for i, e in enumerate(events) if e["kind"] == "dept.message" and e["data"]["department"] == department]
+    return [{"role": e["data"]["role"], "text": e["data"]["text"], "from": e["data"].get("from"), "at": e["at"], "early": i < approved, "details": e["data"].get("details", ""), "choices": e["data"].get("choices", []), "questions": e["data"].get("questions", []), "internal": bool(e["data"].get("internal")) or (e["data"]["role"] == "request" and e["data"].get("from") != "You")} for i, e in enumerate(events) if e["kind"] == "dept.message" and e["data"]["department"] == department]
 
 
 def requests_view(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -564,10 +589,10 @@ def requests_view(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(out.values())
 
 
-def _say(ledger: Ledger, department: str, role: str, text: str, sender: str | None = None, details: str = "", internal: bool = False, choices: Sequence[str] = ()) -> None:
+def _say(ledger: Ledger, department: str, role: str, text: str, sender: str | None = None, details: str = "", internal: bool = False, questions: Sequence[Any] = ()) -> None:
     actor = Actor.human() if role == "you" else SYSTEM
-    picks = [c.strip()[:200] for c in choices if c.strip()][:4]
-    ledger.append(actor, "dept.message", department=department, role=role, text=text, **({"from": sender} if sender else {}), **({"details": details} if details else {}), **({"internal": True} if internal else {}), **({"choices": picks} if picks and not internal else {}))
+    asked = protocol.clean_questions(list(questions))
+    ledger.append(actor, "dept.message", department=department, role=role, text=text, **({"from": sender} if sender else {}), **({"details": details} if details else {}), **({"internal": True} if internal else {}), **({"questions": asked} if asked and not internal else {}))
 
 
 SCREEN_ACTION = re.compile(r"^(please\s+)?(approve|decline|reject|confirm|review|accept)\b.*\b(cad|fusion|proposals?|proposed|components?|connections?|limits?|parts?|tests?|wiring list)\b", re.I)
@@ -739,9 +764,15 @@ SKIP_DIRS = {"ledger", "__pycache__", ".venv", "node_modules", ".git", "generate
 
 def project_files(root: Path, limit: int = 120) -> dict[str, Any]:
     """What's in the project folder, by folder: files anyone added, including the person. Big folders are counted, not listed."""
+    import os
+
     out: dict[str, Any] = {}
-    for folder in sorted({p.parent for p in root.rglob("*") if p.is_file() and not (set(p.relative_to(root).parts) & SKIP_DIRS)}):
-        files = sorted(p.name for p in folder.iterdir() if p.is_file())
+    folders: list[tuple[Path, list[str]]] = []
+    for path, dirs, names in os.walk(root):  # skipped folders are never walked into, so a 4,000-file environment costs nothing
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith(".pio"))
+        if names:
+            folders.append((Path(path), sorted(names)))
+    for folder, files in sorted(folders, key=lambda x: x[0]):
         key = folder.relative_to(root).as_posix() or "."
         kinds = sorted({Path(f).suffix for f in files})
         out[key] = files if len(files) <= 12 else f"{len(files)} files ({', '.join(kinds)}), e.g. {', '.join(files[:4])}"
@@ -1184,6 +1215,8 @@ def _act_on_report(ledger: Ledger, department: str, sent: dict[str, Any], report
     if report.type == "BUG" and any(n.owner != "Tool" for n in report.needs):
         report = report.model_copy(update={"type": "BLOCKED"})  # A real tool fault can't be solved by someone deciding something.
     filed = protocol.file_report(ledger, SYSTEM, department, sent, report, ci.evidence(ledger, department, gates.current_gate(state)))
+    if report.after_build or any(e["kind"] == "measure.after_build" and e["data"]["department"] == department for e in ledger.events()):
+        ledger.append(SYSTEM, "measure.after_build", department=department, items=[i.strip()[:500] for i in report.after_build if i.strip()][:20])
     if report.type == "DONE" and sent["type"] in ("TASK", "RECHECK") and (ledger.root.parent / "_app").is_dir():
         from . import services as reception
 
@@ -1211,7 +1244,8 @@ def _act_on_report(ledger: Ledger, department: str, sent: dict[str, Any], report
 
 def _shared_context(ledger: Ledger, department: str, services: Services) -> dict[str, Any]:
     state, events = ledger.state(), ledger.events()
-    history = "\n\n".join(f"{m['from'] or m['role']}: {m['text']}" for m in [t for t in thread(events, department) if not t["early"]][-10:])
+    talk = [t for t in thread(events, department) if not t["early"]]
+    history = remembered(talk)
     every_request = requests_view(events)
     answered = [r for r in every_request if r.get("route") == "ask_person" and r["status"] == "answered"]  # What the person already said, so nobody asks again.
     involved = answered + [r for r in every_request if department in (r["from"], r["to"]) and r not in answered][-6:]
@@ -1236,6 +1270,16 @@ def _follow_up_context(ledger: Ledger, department: str, services: Services) -> d
     return {**ctx, "briefing": "Follow-up: this is the result of a step you asked for, inside work you're already doing. The full project briefing and other departments' news are left out to save cost; look_up_project, project_files and read_department_reports have them if you need a detail.",
             "department_state": {k: v for k, v in state.items() if k not in FOLLOW_UP_DROPS} if isinstance(state, dict) else state,
             "requests": [], "earlier_discussion": "\n\n".join(f"{m['from'] or m['role']}: {m['text']}" for m in recent)}
+
+
+def remembered(talk: list[dict[str, Any]], recent: int = 10) -> str:
+    """Everything the person has said in a chat, however long ago, then the most recent exchanges in full: so an agent
+    never asks again about something the person already answered."""
+    said = [m["text"].strip()[:500] for m in talk if m["role"] in ("you", "person", "user") and m["text"].strip()][-60:]
+    latest = "\n\n".join(f"{m.get('from') or m['role']}: {m['text']}" for m in talk[-recent:])
+    if len(said) <= 3:
+        return latest
+    return "Everything the person has told you in this chat, oldest first (never ask about these again; the newest answer wins):\n" + "\n".join(f"- {t}" for t in said) + "\n\nRecent exchanges:\n" + latest
 
 
 def _first_tool(department: str, message: str, tools: list[Any]) -> str | None:
@@ -1267,12 +1311,12 @@ async def run_lead(ledger: Ledger, gateway: Gateway, department: str, message: s
         ledger.append(SYSTEM, "command.sent", department=department, **sent)
         tier, turns = ROUTINE.get(sent["type"], (None, LEAD_TURNS)) if not attachments else (None, LEAD_TURNS)
         try:
-            reply: Any = await gateway.run(agent=LEADS[department], tools=tools, request_limit=turns, tier=tier, attachments=attachments, output_type=protocol.Report, first_tool=_first_tool(department, message, tools), values={**(_follow_up_context if follow_up else _shared_context)(ledger, department, services), "message": message, "command": sent})
+            reply: Any = await gateway.run(agent=LEADS[department], tools=tools, request_limit=turns, tier=tier, attachments=attachments, output_type=protocol.Report, first_tool=_first_tool(department, message, tools), values={**(await asyncio.to_thread(_follow_up_context if follow_up else _shared_context, ledger, department, services)), "message": message, "command": sent})
         except TurnLimitReached:
             reply = _out_of_turns(department)
         report = protocol.shorten(protocol.from_reply(reply))
         job.outcome = report.type
-        _say(ledger, department, "agent", report.for_person, details=report.details, internal=internal, choices=report.choices)
+        _say(ledger, department, "agent", report.for_person, details=report.details, internal=internal, questions=report.questions)
         _act_on_report(ledger, department, sent, report, nested)
     return report.for_person
 
@@ -1303,7 +1347,7 @@ async def run_clones(ledger: Ledger, gateway: Gateway, department: str, groups: 
         _act_on_report(ledger, department, sent, report, False)
     if finished:
         joined = protocol.shorten(finished[0][0].model_copy(update={"for_person": " ".join(r.for_person for r, _s in finished), "details": "\n\n".join(r.details for r, _s in finished if r.details)}))
-        _say(ledger, department, "agent", joined.for_person, details=joined.details, choices=joined.choices)
+        _say(ledger, department, "agent", joined.for_person, details=joined.details, questions=[q for r, _s in finished for q in r.questions])
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome
@@ -1414,7 +1458,7 @@ def request_tool_tool(ledger: Ledger, sender: str) -> Callable[..., str]:
         """Ask Reception for a tool this project doesn't have, such as structural analysis, a parts-pricing API or a circuit simulator.
         capability is what you need done, in a few words; why is what you'll use it for. The person sees it at Reception, where External
         and Internal Service help set it up. Until then, carry on with what you have and say what the missing tool would settle.
-        A measurement on real hardware, buying something, or anything a person does by hand isn't a tool: put it in your report's needs instead."""
+        A measurement on real hardware isn't a tool: before Build, put it in your report's after_build with a provisional value and how it will be measured. Buying something, or anything a person does by hand, goes in needs."""
         from . import services as reception
 
         answer = reception.ask(Ledger(ledger.root.parent / "_app"), ledger.root.name, sender, capability, why)
@@ -1556,6 +1600,8 @@ async def run_step(ledger: Ledger, gateway: Gateway, action: str, services: Serv
         await ci.run_pending(ledger)
     elif action.startswith("gate_review:"):
         await hq_agents.run_gate_review(ledger, gateway, action.split(":")[1])
+    elif action.startswith("criteria_check:"):
+        await hq_agents.run_criteria_check(ledger, gateway, action.split(":")[1])
     elif action.startswith("relay:"):
         data = next(e["data"] for e in events if e["id"] == action.split(":")[1])
         await department_tool(ledger, gateway, data["sender"], services)(data["to"], data["what"], data.get("why") or f"{data['sender']}'s work, which is waiting on it")
@@ -1618,6 +1664,8 @@ def label_for(action: str) -> str:
         return "Running the automatic checks"
     if action.startswith("followup:"):
         return f"{action.split(':')[1]} is continuing with the results it asked for"
+    if action.startswith("criteria_check:"):
+        return "Headquarters is checking this stage's own requirements"
     if action.startswith("gate_review:"):
         return f"Reviewing the design for the {gates.stage(action.split(':')[1])} stage"
     if action.startswith("relay:"):
@@ -1692,7 +1740,7 @@ async def advance(ledger: Ledger, gateway: Gateway, services: Services, guard: C
             for task in [t for t in running if t.done()]:
                 await finish(task)
             busy = {d for _a, d in running.values() if d} | jobs.busy(ledger)
-            action = next_action(ledger, {a for a, _d in running.values()}, busy)
+            action = await asyncio.to_thread(next_action, ledger, {a for a, _d in running.values()}, busy)
             wait = outbox_wait(ledger.events()) if action is not None else 0.0
             if action is not None and wait != 0:  # the person is mid-round: running jobs carry on, new ones wait
                 if wait is None and not running:

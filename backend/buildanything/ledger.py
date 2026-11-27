@@ -65,7 +65,7 @@ class Actor:
 HUMAN_ONLY = {
     "gate.approved", "record.confirmed", "record.rejected", "limit.changed", "test.result_accepted", "test.result_dismissed",
     "connector.saved", "connector.removed", "connector.approved", "autonomy.changed",
-    "debug.measurement", "check.closed", "budget.set", "release.created", "gate.imported", "finding.decided", "command.person", "compat.accepted", "requirement.clarified", "component.owned", "component.variant", "component.no_datasheet", "component.doc_missing", "assumption.checked", "bench.accepted", "bench.screen", "need.waived", "part.model_waived", "needs.none", "deviation.closed", "order.arrived", "test.result", "test.dependencies", "change.approved", "change.rejected", "change.reopened", "request.person_answered", "task.done", "software.tests", "software.autotest", "sim.code_allowed", "cad.trials_allowed", "scope.set", "flash.approved", "flash.restored", "concept.approved", "project.updated", "hq.retry", "research.waived", "packet.acked", "packet.removed", "link.answer", "link.routed", "link.closed", "software.step", "cad.kept", "cad.rolled_back", "cad.contact_allowed", "cad.synced", "cad.drawing", "shape.set", "shape.request_declined", "gate.criterion_met", "platform.converter_decided", "service.install_approved", "service.install_rejected", "service.ask_closed", "hq.paused", "project.disconnected", "hq.send_now", "hq.office", "service.tool_decided", "skill.decided", "handoff.reported", "skills.auto_set", "tab.decided", "tabs.scripts_allowed", "tab.shown", "conn.decided", "conn.key_set", "conn.write_decided", "conn.write_trust", "conn.removed",
+    "debug.measurement", "check.closed", "budget.set", "release.created", "gate.imported", "finding.decided", "command.person", "compat.accepted", "requirement.clarified", "component.owned", "component.variant", "component.no_datasheet", "component.doc_missing", "assumption.checked", "bench.accepted", "bench.screen", "need.waived", "part.model_waived", "needs.none", "deviation.closed", "order.arrived", "test.result", "test.dependencies", "change.approved", "change.rejected", "change.reopened", "request.person_answered", "task.done", "software.tests", "software.autotest", "sim.code_allowed", "cad.trials_allowed", "scope.set", "flash.approved", "flash.restored", "concept.approved", "project.updated", "hq.retry", "research.waived", "packet.acked", "packet.removed", "link.answer", "link.routed", "link.closed", "software.step", "cad.kept", "cad.rolled_back", "cad.contact_allowed", "cad.synced", "cad.drawing", "shape.set", "shape.request_declined", "gate.criterion_met", "criterion.proposal_rejected", "platform.converter_decided", "service.install_approved", "service.install_rejected", "service.ask_closed", "hq.paused", "project.disconnected", "hq.send_now", "hq.office", "service.tool_decided", "skill.decided", "handoff.reported", "skills.auto_set", "tab.decided", "tabs.scripts_allowed", "tab.shown", "conn.decided", "conn.key_set", "conn.write_decided", "conn.write_trust", "conn.removed",
 }
 
 # A model may suggest these checks but can never report their results.
@@ -101,7 +101,8 @@ def _lock_for(path: Path) -> threading.Lock:
 
 # Screens ask for the project's history many times per request. The file is the truth: these only skip
 # parsing when its bytes haven't changed, so an edit made outside the app is still caught.
-_parsed: dict[Path, tuple[bytes, bytes]] = {}
+_stamps: dict[Path, tuple[tuple[int, int] | None, bytes]] = {}  # path -> (size and time, content hash)
+_parsed: dict[Path, tuple[bytes, list[dict[str, Any]]]] = {}  # path -> (content hash, events); callers get copies
 _states: dict[Path, tuple[bytes, bytes]] = {}
 
 
@@ -138,6 +139,10 @@ class Ledger:
         self._lock = _lock_for(self.path)
 
     def _authorize(self, actor: Actor, kind: str, data: dict[str, Any]) -> None:
+        if kind in ("record.confirmed", "record.rejected"):
+            status = (self.state().records.get(data.get("id")) or {}).get("status")
+            if status == "superseded":  # a screen showing an older list can't bring back what a newer draft replaced
+                raise LedgerError("That was replaced by a newer version. Refresh to see the current one.")
         delegated = actor.kind == "delegated" and kind == "record.confirmed" and self.state().records.get(data.get("id"), {}).get("type") in DELEGATED_RECORDS
         if actor.kind == "delegated" and kind == "skill.decided" and data.get("approved") and data.get("verified"):
             from .skills import auto_enabled, listing, verified  # the person chose to let Skills through that really passed every check
@@ -179,18 +184,42 @@ class Ledger:
             }
             event["sha"] = _content_hash(event)
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            before = _stamps.get(self.path)
             with self.path.open("a", encoding="utf-8", newline="\n") as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            self._remember_append(before, event)
         return event
+
+    def _remember_append(self, before: tuple[tuple[int, int] | None, bytes] | None, event: dict[str, Any]) -> None:
+        """The record only grows, so the remembered events and state just take the new event, without re-reading the file."""
+        parsed, states = _parsed.get(self.path), _states.get(self.path)
+        if before is None or parsed is None or parsed[0] != before[1]:
+            return
+        try:
+            key = self._read()[0]
+        except OSError:
+            return
+        _stamps[self.path] = (self._stamp(), key)
+        if parsed[1] and (parsed[1][-1]["at"], parsed[1][-1]["id"]) > (event["at"], event["id"]):
+            return  # out of order (a merge): the next read rebuilds everything
+        _parsed[self.path] = (key, [*parsed[1], json.loads(json.dumps(event, ensure_ascii=False))])
+        if states and states[0] == before[1]:
+            state = pickle.loads(states[1])
+            _apply(state, event)
+            _states[self.path] = (key, pickle.dumps(state))
 
     def _next_timestamp(self) -> str:
         """Timestamps strictly increase, so a confirmation can never sort before its proposal."""
         now = dt.datetime.now(dt.timezone.utc)
         if self.path.exists():
-            lines = [l for l in self.path.read_text(encoding="utf-8").splitlines() if l.strip()]
-            if lines:
-                # After a merge the newest event may not be the last line.
-                last = max(dt.datetime.fromisoformat(json.loads(l)["at"]) for l in lines)
+            parsed, stamp = _parsed.get(self.path), _stamps.get(self.path)
+            if parsed and stamp and stamp[0] == self._stamp() and parsed[0] == stamp[1]:
+                newest = [parsed[1][-1]["at"]] if parsed[1] else []  # events are kept sorted, so the last is the newest
+            else:
+                lines = [l for l in self.path.read_text(encoding="utf-8").splitlines() if l.strip()]
+                newest = [max((json.loads(l)["at"] for l in lines), key=dt.datetime.fromisoformat)] if lines else []  # after a merge the newest may not be last
+            if newest:
+                last = dt.datetime.fromisoformat(newest[0])
                 if now <= last:
                     now = last + dt.timedelta(microseconds=1)
         return now.isoformat(timespec="microseconds")
@@ -199,13 +228,31 @@ class Ledger:
         raw = self.path.read_bytes()
         return hashlib.sha256(raw).digest(), raw.decode("utf-8")
 
+    def _stamp(self) -> tuple[int, int] | None:
+        try:
+            info = self.path.stat()
+        except OSError:
+            return None
+        return info.st_mtime_ns, info.st_size
+
+    def _key(self) -> bytes:
+        """The content hash, re-read only when the file's size or time changed (the ledger is only ever appended to)."""
+        stamp = self._stamp()
+        known = _stamps.get(self.path)
+        if known and known[0] == stamp:
+            return known[1]
+        key = self._read()[0]
+        _stamps[self.path] = (stamp, key)
+        return key
+
     def events(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        key, text = self._read()
+        key = self._key()
         known = _parsed.get(self.path)
         if known and known[0] == key:  # Same bytes, so the hash chain was already checked. Each caller gets its own copy.
-            return pickle.loads(known[1])
+            return _copies(known[1])
+        key, text = self._read()
         out = []
         for number, line in enumerate(text.splitlines(), 1):
             if not line.strip():
@@ -215,11 +262,11 @@ class Ledger:
                 raise LedgerError(f"Ledger line {number} was changed after it was written.")
             out.append(event)
         out.sort(key=lambda e: (e["at"], e["id"]))
-        _parsed[self.path] = (key, pickle.dumps(out))
-        return out
+        _parsed[self.path] = (key, out)
+        return _copies(out)
 
     def state(self) -> ProjectState:
-        key = self._read()[0] if self.path.exists() else b""
+        key = self._key() if self.path.exists() else b""
         known = _states.get(self.path)
         if known and known[0] == key:
             return pickle.loads(known[1])
@@ -293,11 +340,21 @@ class Ledger:
         return row is not None and int(row[0]) == len(self.events())
 
 
+def _copies(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each caller gets its own events and data dicts, so nobody can change what the next caller sees, without paying
+    for a deep copy of the whole record on every call."""
+    return [{**e, "data": dict(e["data"]), "actor": dict(e["actor"])} for e in events]
+
+
 def _apply(state: ProjectState, event: dict[str, Any]) -> None:
     state.event_count += 1
     kind, data = event["kind"], event["data"]
     if kind == "project.created":
         state.meta = data
+    elif kind == "datasheet.renamed":  # the same document under a readable name: every record that points at it follows
+        for record in state.records.values():
+            if record["fields"].get("file") == data["old"] and record["type"] in ("datasheet", "page_note", "device_fact", "parameter"):
+                record["fields"]["file"] = data["new"]
     elif kind == "component.no_datasheet":
         record = state.records.get(data["id"])
         if record:
@@ -376,7 +433,7 @@ def _apply(state: ProjectState, event: dict[str, Any]) -> None:
     elif kind == "gate.criterion_met":
         key = f"{data['gate']}:{data['index']}"
         if data.get("met", True):
-            state.criteria_met[key] = {"note": data.get("note", ""), "by": event["actor"]["name"], "text": data.get("text", "")}
+            state.criteria_met[key] = {"note": data.get("note", ""), "by": event["actor"]["name"], "text": data.get("text", ""), "at": event["at"][:16].replace("T", " "), "based_on": data.get("based_on", [])}
         else:
             state.criteria_met.pop(key, None)
     elif kind == "limit.changed":

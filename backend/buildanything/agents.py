@@ -14,7 +14,7 @@ from agents import WebSearchTool
 
 from .citations import PageError, PaperIndex, fetch_page, quote_in_text
 from .gateway import Gateway
-from . import gates
+from . import gates, protocol
 from .ledger import Actor, Ledger, LedgerError, ProjectState
 
 DEPARTMENTS = ("Mechanical", "Electrical", "Software", "Procurement", "Simulation")
@@ -59,24 +59,31 @@ class ConceptOut(BaseModel):
     decisions: list[str] = Field(description="Concept-level choices made so far, each one short and specific")
     open_questions: list[str] = Field(description="What still needs deciding at concept level. Empty when the concept is complete")
     team: list[TeamPick] = Field(default_factory=list, description="Only the departments this project needs now")
+    questions: list[protocol.Question] = Field(default_factory=list, description="Every open concept question you need the person to answer now, all together (up to 6), each with 2 to 4 options, recommended first. Never one already settled")
     gates: list[GatePick] = Field(default_factory=list, description="The fewest gates worth a person's review, in journey order, starting with G0")
 
 
 async def run_concept(ledger: Ledger, gateway: Gateway, message: str, tools: list[Any] | None = None) -> str:
     state = ledger.state()
-    recent = state.of_type("concept_draft")[-6:]
+    drafts = state.of_type("concept_draft")
+    recent = drafts[-6:]
     history = "\n\n".join((f"User: {d['fields']['message']}\n" if d["fields"]["message"] else "") + f"You: {d['fields']['reply']}" for d in recent)
+    # Everything the person has said, and the decisions as they stand: so nothing settled is asked again, however long the chat.
+    said = [d["fields"]["message"] for d in drafts if d["fields"].get("message")]
+    latest = drafts[-1]["fields"] if drafts else {}
+    settled = {"everything_the_person_said": said, "decisions_so_far": latest.get("decisions", []), "concept_so_far": latest.get("summary", "")}
     from . import gates, shape
 
     options = {"departments": {n: t["blurb"] for n, t in shape.DEPARTMENT_TYPES.items()},
                "stages": {g: {"name": gates.JOURNEY[g][0], "purpose": gates.JOURNEY[g][1], "checks": gates.TEMPLATE_CHECKS[g]} for g in gates.TEMPLATE_CHECKS},
                "checks": {k: label for k, (label, _stage) in gates.CHECKS.items()}}
-    output: ConceptOut = await gateway.run(agent="concept", values={"project": _brief(state), "confirmed_claims": _confirmed_claims(state), "earlier_discussion": history, "message": message, "shape_options": options}, output_type=ConceptOut, tools=tools or [], request_limit=12)
+    output: ConceptOut = await gateway.run(agent="concept", values={"project": _brief(state), "confirmed_claims": _confirmed_claims(state), "earlier_discussion": history, "settled": settled, "message": message, "shape_options": options}, output_type=ConceptOut, tools=tools or [], request_limit=12)
     proposed = None
     if output.team or output.gates:
         proposed = shape.normalise_proposal([t.department for t in output.team], [g.model_dump() for g in output.gates])
         proposed["why"] = {t.department: t.why for t in output.team if t.department in proposed["team"]}
-    ledger.propose(Actor.agent("concept"), "concept_draft", message=message, reply=output.reply, summary=output.summary, decisions=output.decisions, open_questions=output.open_questions, speculative=True, **({"shape": proposed} if proposed else {}))
+    asked = protocol.clean_questions(output.questions)
+    ledger.propose(Actor.agent("concept"), "concept_draft", message=message, reply=output.reply, summary=output.summary, decisions=output.decisions, open_questions=output.open_questions, speculative=True, **({"shape": proposed} if proposed else {}), **({"questions": asked} if asked else {}))
     return output.reply
 
 
@@ -179,7 +186,6 @@ class TaskOut(BaseModel):
     key: str
     department: Literal["Mechanical", "Electrical", "Software", "Procurement", "Simulation"]
     title: str
-    weeks: int = Field(ge=1, le=12)
     depends_on: list[str] = Field(description="Keys of tasks that must finish first")
 
 
@@ -224,7 +230,7 @@ def schedule(plan: PlanOut) -> dict[str, int] | None:
             dep_start = visit(dep)
             if dep_start is None:
                 return None
-            begin = max(begin, dep_start + by_key[dep].weeks)
+            begin = max(begin, dep_start + 1)
         visiting.discard(key)
         start[key] = begin
         return begin
@@ -287,10 +293,17 @@ async def run_plan(ledger: Ledger, gateway: Gateway, feedback: str = "", address
         quoted = _plain(requirement.person_said)
         real = bool(quoted) and f" {quoted} " in words
         ledger.propose(actor, "requirement", key=requirement.key, text=requirement.text, verification=requirement.verification, person_said=requirement.person_said.strip() if real else "", added_because="" if real else requirement.added_because.strip() or "From the approved concept and your answers in it.")
-    for task in plan.tasks:
-        key_to_id[task.key] = ledger.propose(actor, "task", key=task.key, department=task.department, title=task.title,
-                                             weeks=task.weeks, depends_on=task.depends_on, start_week=starts[task.key])
+    for task in plan.tasks:  # Headquarters' own work list for briefing departments: filed, not put to the person
+        key_to_id[task.key] = add_task(ledger, actor, key=task.key, department=task.department, title=task.title, depends_on=task.depends_on, start_week=starts[task.key])
     return {"created": len(plan.requirements) + len(plan.tasks), "problems": []}
+
+
+def add_task(ledger: Ledger, actor: Actor, **fields: Any) -> str:
+    """Tasks are how Headquarters splits the agreed requirements into work for each department. The person agrees the
+    requirements; the tasks are filed straight away, with no durations (agents don't work to a calendar)."""
+    record = ledger.propose(actor, "task", weeks=1, **fields)
+    ledger.append(Actor.delegated("headquarters"), "record.confirmed", id=record)
+    return record
 
 
 def build_briefing(state: ProjectState, department: str) -> dict[str, Any]:
@@ -319,6 +332,45 @@ class FindingOut(BaseModel):
 
 class VerifyOut(BaseModel):
     findings: list[FindingOut]
+
+
+class CriterionVerdict(BaseModel):
+    index: int
+    met: bool = Field(description="True only if the project really shows this requirement is met")
+    reason: str = Field(description="One or two plain sentences, naming the requirement keys, decisions or results that show it")
+    missing: str = Field(default="", description="If not met: exactly what's missing. Empty if met")
+    owner: str = Field(default="", description="If not met: the department that should provide it. Empty if met")
+
+
+class CriteriaOut(BaseModel):
+    verdicts: list[CriterionVerdict]
+
+
+async def run_criteria_check(ledger: Ledger, gateway: Gateway, gate: str) -> None:
+    """Headquarters judges each of a stage's own requirements against the project and proposes a tick with its reason.
+    Only the person ticks; this saves them finding and weighing the evidence themselves."""
+    from . import shape
+
+    state, events = ledger.state(), ledger.events()
+    todo = gates.criteria_unchecked(state, events, gate)
+    if not todo:
+        return
+    views = {c["index"]: c for c in gates.criteria_view(state, gate)}
+    latest: dict[str, str] = {}
+    for e in events:
+        if e["kind"] == "report.filed":
+            d = e["data"]
+            latest[d["department"]] = f"{d.get('type')}: {d.get('for_person', '')} Done: {'; '.join(d.get('done') or [])[:600]}"
+    criteria = [{"index": i, "text": views[i]["text"], "related": gates.criterion_evidence(state, events, views[i]["text"], limit=8)} for i in todo]
+    output: CriteriaOut = await gateway.run(agent="criteria_reviewer", output_type=CriteriaOut, request_limit=3, values={
+        "project": _brief(state), "stage": gates.stage(gate, state), "criteria": criteria,
+        "requirements": [{"key": r["fields"].get("key"), "text": r["fields"].get("text")} for r in state.of_type("requirement", "confirmed")],
+        "decisions": [d["fields"]["text"] for d in state.of_type("decision", "confirmed")], "latest_reports": latest, "team": shape.team(state)})
+    for verdict in output.verdicts:
+        if verdict.index in todo:
+            text = views[verdict.index]["text"]
+            ledger.append(Actor.agent("criteria_reviewer"), "criterion.proposed", gate=gate, index=verdict.index, text=text, met=verdict.met, reason=verdict.reason.strip()[:600],
+                          missing="" if verdict.met else verdict.missing.strip()[:400], owner="" if verdict.met else verdict.owner.strip()[:40], fingerprint=gates.criterion_fingerprint(state, events, text))
 
 
 async def run_gate_review(ledger: Ledger, gateway: Gateway, gate: str) -> None:

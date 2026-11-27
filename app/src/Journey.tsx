@@ -5,7 +5,7 @@ import { Rendered } from "./AgentChat";
 import ShapeEditor, { type ShapeView } from "./ShapeEditor";
 
 interface Waiting { who: string; text: string; }
-interface Criterion { index: number; text: string; met: boolean; note?: string; by?: string; }
+interface Criterion { index: number; text: string; met: boolean; note?: string; by?: string; at?: string; basedOn?: string[]; proposal?: { met: boolean; reason: string; missing: string; owner: string; rejected: string }; evidence?: { kind: string; label: string; text: string }[]; }
 interface Stop { id: string; name: string; stage: string; purpose: string; phase: string; state: string; by?: string; at?: string; missing?: string[]; waiting?: Waiting[]; criteria: Criterion[]; checks: { key: string; label: string }[]; }
 interface Checks { stages: { stage: string; owner: string; state: string; problems: string[] }[]; departments: { name: string; held: boolean; bug: boolean; lastReport: string | null }[]; }
 
@@ -120,7 +120,26 @@ export default function Journey() {
                     if (!c.met && !note) return;
                     run("Saving", async () => { await call(`/projects/${projectId}/gates/${stop.id}/criteria/${c.index}`, "POST", { met: !c.met, note }); await load(); });
                   }} /> {c.text}</label>
-                  {c.met && <span className="hint"> {c.by}: {c.note}</span>}
+                  {c.met && (
+                    <div className="criterion-why">
+                      <b>Why you ticked it</b>{c.at ? ` (${c.by}, ${c.at})` : ` (${c.by})`}: “{c.note}”
+                      {(c.basedOn ?? []).length > 0 && <><div className="hint">What the project showed when you ticked it:</div><ul className="criterion-evidence">{c.basedOn!.map((b, j) => <li key={j}>{b}</li>)}</ul></>}
+                    </div>
+                  )}
+                  {!c.met && c.proposal && !c.proposal.rejected && (
+                    <div className={`criterion-proposal ${c.proposal.met ? "ok" : "no"}`}>
+                      <b>Headquarters checked it: {c.proposal.met ? "met" : "not met yet"}.</b> {c.proposal.reason}
+                      {!c.proposal.met && c.proposal.missing && <> Missing: {c.proposal.missing}{c.proposal.owner ? ` (${c.proposal.owner})` : ""}.</>}
+                      {stop.state === "current" && c.proposal.met && <div className="row">
+                        <button className="small primary" disabled={!!busy} onClick={() => run("Saving", async () => { await call(`/projects/${projectId}/gates/${stop.id}/criteria/${c.index}/proposal`, "POST", { accept: true }); await load(); })}>Agree and tick</button>
+                        <button className="small" disabled={!!busy} onClick={() => { const reason = window.prompt("Why isn't it met? Headquarters checks again when the project changes.", ""); if (reason) run("Saving", async () => { await call(`/projects/${projectId}/gates/${stop.id}/criteria/${c.index}/proposal`, "POST", { accept: false, reason }); await load(); }); }}>Not met</button>
+                      </div>}
+                    </div>
+                  )}
+                  {!c.met && c.proposal?.rejected && <p className="hint criterion-evidence">You said it isn't met yet: {c.proposal.rejected}. Headquarters checks again when the project changes.</p>}
+                  {c.met ? null : (c.evidence ?? []).length > 0 ? (
+                    <ul className="criterion-evidence">{c.evidence!.map((e, j) => <li key={j}><b>{e.kind}{e.label ? ` ${e.label}` : ""}:</b> {e.text}</li>)}</ul>
+                  ) : <p className="hint criterion-evidence">Nothing in the project matches this yet. Ask Headquarters to have it written up.</p>}
                 </li>
               ))}</ul>
             </div>

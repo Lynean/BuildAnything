@@ -272,7 +272,7 @@ def test_routing_follows_the_table_and_the_issue_stays_open(led, issue, cause, d
 def test_antenna_placement_creates_a_mechanical_task(led, issue):
     links.record_check(led, issue, 0, "fail", "RSSI -90 near the frame", HUMAN)
     links.route(led, issue, "antenna_placement", "", "", HUMAN)
-    assert led.state().of_type("task", "proposed")[0]["fields"]["department"] == "Mechanical"
+    assert led.state().of_type("task", "confirmed")[0]["fields"]["department"] == "Mechanical"
 
 
 class StubGateway:

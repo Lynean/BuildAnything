@@ -461,6 +461,28 @@ def asks(app_ledger: Ledger, project: str = "") -> list[dict[str, Any]]:
     return sorted(out, key=lambda a: a["project"] != project) if project else out
 
 
+def link_answers(app_ledger: Ledger, kind: str, key: str, answers: str) -> list[str]:
+    """A Service agent's proposal (an install, tool, Skill, connection or tab) names the department requests it answers,
+    so approving it closes them."""
+    wanted = [a.strip() for a in answers.replace(";", ",").split(",") if a.strip()]
+    open_ids = {a["id"] for a in asks(app_ledger)}
+    linked = [a for a in wanted if a in open_ids]
+    if linked:
+        app_ledger.append(Actor.system("reception"), "service.answers", item=kind, key=key, asks=linked)
+    return linked
+
+
+def settle_answered(app_ledger: Ledger, kind: str, key: str, label: str) -> int:
+    """Closes the requests an approved proposal answers."""
+    linked = {a for e in app_ledger.events() if e["kind"] == "service.answers" and e["data"]["item"] == kind and e["data"]["key"] == key for a in e["data"]["asks"]}
+    closed = 0
+    for a in asks(app_ledger):
+        if a["id"] in linked:
+            app_ledger.append(Actor.system("reception"), "service.ask_answered", id=a["id"], department=a["department"], resolution=f"Answered by the approved {label}.")
+            closed += 1
+    return closed
+
+
 def settle_asks(app_ledger: Ledger, project: str, department: str, why: str) -> int:
     """Closes a department's open requests once it has finished the work they were for."""
     mine = [a for a in asks(app_ledger) if a["project"] == project and a["department"] == department]

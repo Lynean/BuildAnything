@@ -129,7 +129,7 @@ def _results(ledger: Ledger) -> tuple[dict[str, dict[str, Any]], dict[str, list[
     return results, edited
 
 
-def _test_view(ledger: Ledger, test: dict[str, Any], results: dict[str, dict[str, Any]], edited: dict[str, list[str]], graph: depgraph.Graph) -> dict[str, Any]:
+def _test_view(ledger: Ledger, test: dict[str, Any], results: dict[str, dict[str, Any]], edited: dict[str, list[str]], graph: depgraph.Graph, proposed: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:
     from . import ci
 
     f = {**test["fields"], "uses": edited.get(test["id"], test["fields"].get("uses", []))}
@@ -142,7 +142,7 @@ def _test_view(ledger: Ledger, test: dict[str, Any], results: dict[str, dict[str
         stale = sorted({graph.labels.get(n, n.split(":", 1)[-1]) for n in {*before, *now} if before.get(n) != now.get(n)})
     automatic = f.get("automatic", "none")
     state = "needs_approval" if test["status"] == "proposed" else ci.automatic_state(ledger, automatic) if automatic != "none" else "not_tested" if not result else "retest" if stale else result["outcome"]
-    return {"id": test["id"], **f, "proposals": proposals(ledger).get(test["id"], []), "stage": f.get("stage", "built"), "automatic": automatic, "status": test["status"], "state": state, "result": {k: v for k, v in result.items() if k != "snapshot"} if result else None, "staleBecause": stale, "relies": sorted(graph.labels[n] for n in nodes if not n.startswith("requirement:"))}
+    return {"id": test["id"], **f, "proposals": (proposals(ledger) if proposed is None else proposed).get(test["id"], []), "stage": f.get("stage", "built"), "automatic": automatic, "status": test["status"], "state": state, "result": {k: v for k, v in result.items() if k != "snapshot"} if result else None, "staleBecause": stale, "relies": sorted(graph.labels[n] for n in nodes if not n.startswith("requirement:"))}
 
 
 def deviations(ledger: Ledger) -> list[dict[str, Any]]:
@@ -179,7 +179,8 @@ def _view(ledger: Ledger) -> dict[str, Any]:
     results, edited = _results(ledger)
     graph = depgraph.build(ledger)
     live_keys = {_key(r) for r in requirements(state)}
-    tests = [_test_view(ledger, t, results, edited, graph) for t in _active(state)]
+    proposed = proposals(ledger)  # read once for every test, not once per test
+    tests = [_test_view(ledger, t, results, edited, graph, proposed) for t in _active(state)]
     for test in tests:
         test["covers"] = [k for k in test["covers"] if k in live_keys] or test["covers"]
     accepted = {d["key"]: d for d in deviations(ledger) if d["status"] == "active"}
@@ -195,6 +196,16 @@ def _view(ledger: Ledger) -> dict[str, Any]:
     untestable = next((e["data"]["items"] for e in reversed(ledger.events()) if e["kind"] == "test.untestable"), [])
     counts = {s: sum(1 for r in rows if r["status"] == s) for s in ("proven", "deviated", "failed", "retest", "not_tested", "needs_approval", "no_test")}
     return {"rows": rows, "tests": tests, "counts": counts, "total": len(rows), "untestable": untestable, "dependencyOptions": depgraph.options(graph), "deviations": deviations(ledger), "dropped": [e["data"] for e in ledger.events() if e["kind"] == "requirement.dropped"]}
+
+
+def after_build(ledger: Ledger) -> list[dict[str, Any]]:
+    """What each department will measure once the hardware is built, with its provisional value and method: each
+    department's latest list."""
+    latest: dict[str, dict[str, Any]] = {}
+    for e in ledger.events():
+        if e["kind"] == "measure.after_build":
+            latest[e["data"]["department"]] = {"department": e["data"]["department"], "items": e["data"]["items"], "at": e["at"][:10]}
+    return [v for v in latest.values() if v["items"]]
 
 
 def tests_due(ledger: Ledger, stage: str) -> list[dict[str, Any]]:

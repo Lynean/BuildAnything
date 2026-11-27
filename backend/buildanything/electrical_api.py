@@ -119,7 +119,7 @@ def view(ledger: Ledger, state: ProjectState) -> dict[str, Any]:
         "disputes": designneeds.disputes(ledger),
         "noneNeeded": designneeds.declared_none(ledger, "Electrical"),
         "parameters": state.of_type("parameter"),
-        "nets": state.of_type("net"),
+        "nets": [n for n in state.of_type("net") if n["status"] in ("proposed", "confirmed")],  # the current list, not every earlier draft
         "checks": compat.run_checks(state),
         "powerTree": compat.power_tree(state),
         "debug": list(debugging.sessions(ledger).values()),
