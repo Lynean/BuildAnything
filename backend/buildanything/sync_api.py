@@ -193,10 +193,11 @@ def register(app: FastAPI, root: Path, get_ledger: Callable[[str], Ledger], get_
         return memory.graph(get_ledger(project_id))
 
     @app.get("/api/projects/{project_id}/story")
-    def project_story(project_id: str, after: int = -1) -> dict[str, Any]:
+    def project_story(project_id: str, after: int = -1, automatic: bool = False) -> dict[str, Any]:
+        """By default only what agents and the person said and decided; automatic=true adds the app's checks, saves and reads."""
         from . import story
 
-        return {"team": story.TEAM, "steps": story.steps(get_ledger(project_id), after)}
+        return {"team": story.TEAM, "steps": story.steps(get_ledger(project_id), after, automatic)}
 
     @app.get("/api/projects/{project_id}/gates")
     def gate_list(project_id: str) -> list[dict[str, Any]]:

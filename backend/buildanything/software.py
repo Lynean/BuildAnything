@@ -336,9 +336,12 @@ def run_tests(ledger: Ledger, root: Path, device: str, confirmed: bool, actor: A
     else:
         lines, ok = [line[:300] for line in (done.stderr + done.stdout).splitlines() if line.strip()][-40:], done.returncode == 0
     ran = next((line for line in lines if line.startswith("Ran ")), "")
-    if ran.startswith("Ran 0 "):
-        ok = False
-    if not ok:
+    if ran.startswith("Ran 0 "):  # nothing to pass yet, but nothing failed either: not a troubleshooting case
+        debugging.clear_automatic(ledger, "Tests failed", device, "A later run found no failing tests.")
+        return {"ok": False, "no_tests": True, "lines": lines, "summary": "There are no tests yet."}
+    if ok:
+        debugging.clear_automatic(ledger, "Tests failed", device, "A later run passed all its tests.")
+    else:
         debugging.open_or_repeat(ledger, "Tests failed", "\n".join(lines[-8:]), "code", Actor.system("software"), device=device, where=device)
     return {"ok": ok, "lines": lines, "summary": ran or ("Passed." if ok else "The tests didn't finish.")}
 
@@ -574,6 +577,8 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
     asked_to_connect = tested = built = False
     test_summary = build_summary = ""
     read_tools = [search_open_source, fw.code_reader(root, device), deliverables.tools(ledger)[1]]
+    saved_paths: set[str] = set()  # blocks kept from attempts that partly passed
+    held_back: list[str] = []
     for attempt in range(3):
         attempts += 1
         output: SoftwareOut = await gateway.run(
@@ -591,8 +596,18 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
                 continue
             last = []  # deliberately changed nothing; reported below
         if last:
-            feedback = "\n".join(last)
+            kept, held = fw.salvage(root, device, output.files, [p for p in last if not p.startswith("Edit ")]) if not edit_problems and not kept_problems else ([], last)
+            if kept and not (path_problems(kept) + fw.documentation_problems_host(kept) + syntax_problems(kept) + fw.component_problems(kept, fw.component_names(ledger.state()))):
+                fw.write_files(root, device, kept, host=True)  # keep the good blocks now; only the failed ones go back to the writer
+                for path, text in edited.items():
+                    (root / "firmware" / device / path).write_text(text, encoding="utf-8", newline="\n")
+                saved_paths.update([f.path for f in kept] + list(edited))
+                held_back[:] = held
+                feedback = fw.held_feedback(sorted(saved_paths), held)
+            else:
+                feedback = "\n".join(last)
             continue
+        held_back.clear()
         backup = {p: (root / "firmware" / device / p).read_text(encoding="utf-8") for p in edited if (root / "firmware" / device / p).is_file()}
         fw.write_files(root, device, output.files, host=True)
         for path, text in edited.items():
@@ -654,4 +669,8 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, go
             out["note"] = ("The code writer worked but chose not to change any file. This isn't a tool fault, so don't report a BUG. Its reasons, from its setup notes: "
                            + (output.not_done.strip() or " | ".join(s.expect for s in output.setup_steps))[:900] + " Resolve what it's missing (ask a department, or decide it yourself if it's yours to decide) and call again.")
         return out
+    if saved_paths:  # part of the work passed and is saved: say what, and what's still to do
+        result = await asyncio.to_thread(build, root, device)
+        return {"written": sorted(saved_paths), "held_back": held_back or last, "build": result, "attempts": attempts, "pagesOpened": 0, "findingsSaved": 0, "licenceReview": [],
+                "detail": "The blocks that passed are saved. The ones in held_back weren't saved: write them again with those problems fixed, marking the saved blocks unchanged."}
     return {"written": [], "build": {"ok": False, "ran": True, "errors": last, "detail": "The agent could not produce a passing result."}, "attempts": attempts, "pagesOpened": 0, "findingsSaved": 0, "licenceReview": []}

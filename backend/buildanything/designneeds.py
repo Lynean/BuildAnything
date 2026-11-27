@@ -214,6 +214,25 @@ def is_purchased(part: dict[str, Any]) -> bool:
     return bool(re.search(r"purchas|buy|bought|off.the.shelf|\bstandard\b|supplied", str(part["fields"].get("process", "")), re.I))
 
 
+LOOSE = re.compile(r"\b(wires?|wiring|cables?|leads?|screws?|bolts?|nuts?|washers?|fasteners?|rivets?|zip.?ties?|cable.?ties?|tape|glue|adhesive|solder|heat.?shrink|connectors?|crimps?|labels?|bands?|o-?rings?|sleeving|lubricant|grease)\b", re.I)
+
+
+def is_loose(part: dict[str, Any]) -> bool:
+    """Wire, screws, ties and similar: they don't take a place of their own in the product, so they need no CAD body."""
+    return bool(LOOSE.search(f"{part['fields'].get('name', '')} {part['fields'].get('material', '')}"))
+
+
+def model_waivers(ledger: Ledger) -> dict[str, str]:
+    """Parts the person said need no body in the CAD model, with their reason."""
+    return {e["data"]["part"]: e["data"]["reason"] for e in ledger.events() if e["kind"] == "part.model_waived"}
+
+
+def waive_model(ledger: Ledger, part_number: str, reason: str, actor: Actor) -> None:
+    if len(reason.strip()) < 8:
+        raise NeedsError("Say why this part doesn't need to be in the CAD model.")
+    ledger.append(actor, "part.model_waived", part=part_number.strip(), reason=reason.strip()[:400])
+
+
 def to_buy_part(part: dict[str, Any]) -> bool:
     return is_purchased(part) and not is_owned(part)
 

@@ -8,7 +8,7 @@ interface Op { name: string; description: string; writes: boolean; method: strin
 interface Manifest { id: string; name: string; summary: string; kind: string; base_url: string; mcp_target: string; fields: { id: string; label: string; where: string; secret: boolean }[]; auth: { type: string; oauth?: { grant: string; scopes: string[] } }; setup: string[]; departments: string[]; operations: Op[]; check: string; sources: string[] }
 interface Conn { id: string; state: "waiting" | "needs_setup" | "connected"; approved: Manifest | null; proposed: Manifest | null; missing: string[]; signedIn: boolean; last: { at: string; ok: boolean; operation: string; status?: number | string } | null }
 interface Req { request: string; id: string; operation: string; params: Record<string, unknown>; why: string; department: string; project: string; by: string; at: string; status: string; result?: { ok: boolean; status?: number; summary?: string } }
-interface View { connections: Conn[]; requests: Req[]; redirect: string; test?: { ok: boolean; error?: string; status?: number | string; data?: unknown }; result?: { ok: boolean; error?: string } }
+interface View { connections: Conn[]; requests: Req[]; trusts?: { connection: string; operation: string; project: string; department: string }[]; redirect: string; test?: { ok: boolean; error?: string; status?: number | string; data?: unknown }; result?: { ok: boolean; error?: string } }
 
 const STATE: Record<Conn["state"], [string, string]> = { waiting: ["Waiting for your approval", "warn"], needs_setup: ["Needs setting up", "warn"], connected: ["Connected", "good"] };
 const where = (m: Manifest) => m.kind === "mcp" ? m.mcp_target : m.base_url;
@@ -79,11 +79,18 @@ export default function ConnectionsAdmin() {
       <h3>Connections</h3>
       <p className="hint">Outside services the agents can use: online APIs and MCP servers. Keys go straight into this computer's keyring; agents, scripts and tabs never see them. Reading runs automatically; anything that changes something in a service waits for you here.</p>
       {error && <p className="error">{error}</p>}
+      {(view.trusts ?? []).length > 0 && (
+        <div className="note"><b>Running without asking you</b>
+          <ul>{view.trusts!.map((t) => <li key={`${t.connection}-${t.operation}-${t.project}-${t.department}`}>{t.department} may run {t.operation} on {view.connections.find((c) => c.id === t.connection)?.approved?.name ?? t.connection} in {t.project}.{" "}
+            <button className="small" disabled={!!busy} onClick={() => run("Saving", async () => setView(await call<View>(`/connections/${t.connection}/trust`, "POST", { ...t, on: false })))}>Ask me again</button></li>)}</ul>
+        </div>
+      )}
       {waitingRequests.map((r) => (
         <div key={r.request} className="note service-request">
           <div><b>{r.department} wants to change something in {view.connections.find((c) => c.id === r.id)?.approved?.name ?? r.id}: {r.operation}</b> <span className="hint">({r.project}). {r.why}</span></div>
           <pre className="file-text wrap">{JSON.stringify(r.params, null, 1)}</pre>
-          <div className="row"><button className="primary" disabled={!!busy} onClick={() => decideRequest(r, true)}>Allow and send</button><button disabled={!!busy} onClick={() => decideRequest(r, false)}>Reject</button></div>
+          <div className="row"><button className="primary" disabled={!!busy} onClick={() => decideRequest(r, true)}>Allow and send</button><button disabled={!!busy} onClick={() => decideRequest(r, false)}>Reject</button>
+            <button disabled={!!busy} title="Its later requests for this operation in this project run without asking you. You can stop this at any time." onClick={() => { if (window.confirm(`Allow this, and let ${r.department} run ${r.operation} in ${r.project} without asking from now on? You can switch it off again here.`)) run("Sending", async () => { await call(`/connections/${r.id}/trust`, "POST", { operation: r.operation, project: r.project, department: r.department, on: true }); setView(await call<View>(`/connections/requests/${r.request}/decide`, "POST", { approve: true, reason: "" })); }); }}>Allow, and don't ask again</button></div>
         </div>
       ))}
       {view.connections.length === 0 && <p className="hint">None yet. Ask External Service below, such as “connect Altium 365” or “connect GitHub so Software can read our issues”.</p>}

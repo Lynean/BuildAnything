@@ -43,7 +43,17 @@ def _label(kind: str, fields: dict[str, Any]) -> str:
     return LABELS.get(kind, kind.replace("_", " "))
 
 
-def steps(ledger: Ledger, after: int = -1) -> list[dict[str, Any]]:
+def is_conversation(step: dict[str, Any]) -> bool:
+    """What agents and the person said or decided. The rest (checks, saves, reads, status) is the app's own bookkeeping."""
+    return step["kind"] == "say" or "You" in (step["from"], step["to"])
+
+
+def steps(ledger: Ledger, after: int = -1, automatic: bool = True) -> list[dict[str, Any]]:
+    out = _steps(ledger, after)
+    return out if automatic else [s for s in out if is_conversation(s)]
+
+
+def _steps(ledger: Ledger, after: int = -1) -> list[dict[str, Any]]:
     events = ledger.events()
     records: dict[str, dict[str, Any]] = {}
     asked: dict[str, str] = {}

@@ -72,13 +72,14 @@ export default function TeamStory({ compact = false }: { compact?: boolean }) {
   const [team, setTeam] = useState<string[] | null>(null);
   const [view, setView] = useState<"Story" | "Memory">("Story");
   const [open, setOpen] = useState<Set<number>>(new Set());
+  const [automatic, setAutomatic] = useState(false);  // the app's own checks, saves and reads; off: only what was said and decided
   useEffect(() => { if (projectId) call<{ team: string[] }>(`/projects/${projectId}/shape`).then((r) => setTeam(r.team)).catch(() => setTeam(DEPARTMENTS)); }, [projectId]);
 
   useEffect(() => {
     if (!projectId) return;
     setSteps([]); setPos(0); setPicked(null); setWatching(false); setPlaying(true);
-    call<{ steps: Step[] }>(`/projects/${projectId}/story`).then((r) => { setSteps(r.steps); setPos(r.steps.length); }).catch(() => undefined);
-  }, [projectId]);
+    call<{ steps: Step[] }>(`/projects/${projectId}/story?automatic=${automatic}`).then((r) => { setSteps(r.steps); setPos(r.steps.length); }).catch(() => undefined);
+  }, [projectId, automatic]);
 
   // Live: new events join the story as they happen.
   useEffect(() => {
@@ -86,12 +87,12 @@ export default function TeamStory({ compact = false }: { compact?: boolean }) {
     const t = window.setInterval(() => {
       setSteps((now) => {
         const last = now.length ? now[now.length - 1].i : -1;
-        call<{ steps: Step[] }>(`/projects/${projectId}/story?after=${last}`).then((r) => r.steps.length && setSteps((s) => [...s, ...r.steps.filter((x) => x.i > (s.length ? s[s.length - 1].i : -1))])).catch(() => undefined);
+        call<{ steps: Step[] }>(`/projects/${projectId}/story?after=${last}&automatic=${automatic}`).then((r) => r.steps.length && setSteps((s) => [...s, ...r.steps.filter((x) => x.i > (s.length ? s[s.length - 1].i : -1))])).catch(() => undefined);
         return now;
       });
     }, 4000);
     return () => window.clearInterval(t);
-  }, [projectId]);
+  }, [projectId, automatic]);
 
   useEffect(() => {
     if (watching && pos >= steps.length) { setWatching(false); setPlaying(true); return; }  // caught up: back to the current state
@@ -116,6 +117,7 @@ export default function TeamStory({ compact = false }: { compact?: boolean }) {
       <span className="hint">Now: step {steps.length}</span>
       <label className="hint watch-from">Watch from step <input type="number" min={1} max={steps.length || 1} value={from} placeholder="1" aria-label="Step to watch from" onChange={(e) => setFrom(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") watchFrom(); }} /></label>
       <button className={small ? "small" : ""} disabled={steps.length === 0} onClick={watchFrom}>Watch</button>
+      <label className="hint"><input type="checkbox" checked={automatic} onChange={(e) => setAutomatic(e.target.checked)} /> Show automatic steps</label>
     </>
   );
 

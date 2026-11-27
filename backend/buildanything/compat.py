@@ -320,6 +320,19 @@ def check_pins(board: Board) -> list[dict]:
     return out
 
 
+def _floating_load(board: Board, component: str) -> bool:
+    """A load driven across a pair of one driver's outputs, such as a motor on an H-bridge, a coil or a speaker on a bridge
+    amplifier. It has no ground of its own, and grounding a terminal would short the driver, so it isn't missing one."""
+    nets = [n for n in board.nets if any(m["component"] == component for m in n["fields"]["members"])]
+    drivers = set()
+    for net in nets:
+        others = [m for m in net["fields"]["members"] if m["component"] != component]
+        if net["fields"]["kind"] != "signal" or len(others) != 1 or others[0]["role"] != "output":
+            return False
+        drivers.add(others[0]["component"])
+    return len(nets) >= 2 and len(drivers) == 1
+
+
 def check_ground(board: Board) -> list[dict]:
     grounds = [n for n in board.nets if n["fields"]["kind"] == "ground"]
     if not board.nets:
@@ -328,7 +341,7 @@ def check_ground(board: Board) -> list[dict]:
         return [_result("Common ground", "fail", "No ground net is defined.", [])]
     on_ground = {m["component"] for n in grounds for m in n["fields"]["members"]}
     talking = {m["component"] for n in board.nets if n["fields"]["kind"] in ("signal", "i2c") for m in n["fields"]["members"] if m["role"] != "pullup"}
-    missing = sorted(talking - on_ground)
+    missing = sorted(c for c in talking - on_ground if not _floating_load(board, c))
     if missing:
         return [_result("Common ground", "fail", f"Not connected to ground: {', '.join(board.name(c) for c in missing)}.", missing)]
     if len(grounds) > 1:

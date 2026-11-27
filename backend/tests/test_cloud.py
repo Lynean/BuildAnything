@@ -140,7 +140,7 @@ def test_changes_wait_for_the_person_every_time(store, server):
     store.set_key("demo", "token", "tok-123456", HUMAN)
     with pytest.raises(cloud.CloudError, match="approval"):
         run(store.call("demo", "create_note", {"text": "hi"}, AGENT))
-    req = store.request_write("demo", "create_note", {"text": "hi", "tags": ["a", "b"]}, "Log the test result.", "proj", "Software", Actor.agent("software"))
+    req = run(store.request_write("demo", "create_note", {"text": "hi", "tags": ["a", "b"]}, "Log the test result.", "proj", "Software", Actor.agent("software")))
     assert store.requests()[0]["status"] == "waiting"
     with pytest.raises(PermissionDenied):
         run(store.decide_write(req["request"], True, "", AGENT))
@@ -228,3 +228,32 @@ def test_an_mcp_action_can_pin_arguments_so_test_works_and_read_only_is_enforced
     assert out["readOnly"] is True and out["script"] == "print(1)"
     with pytest.raises(cloud.CloudError, match="doesn't take"):
         run(store.call("echo", "inspect", {"script": "x", "readOnly": False}, AGENT))  # the agent can't turn read-only off
+
+
+def test_what_was_learned_about_a_connection_reaches_every_later_job(store, server):
+    store.propose(api_manifest(server), "", AGENT)
+    store.decide("demo", True, "", HUMAN)
+    store.set_key("demo", "token", "tok-123456", HUMAN)
+    assert "learned_from_earlier_jobs" not in store.for_department("Software")[0]
+    assert store.add_note("demo", "Software", "Notes need a text field; tags must be a list.", AGENT).startswith("Noted")
+    assert store.add_note("demo", "Software", "notes need a text field; tags must be a list.", AGENT) == "That's already noted."
+    req = run(store.request_write("demo", "create_note", {"text": "hi"}, "Log it.", "proj", "Software", Actor.agent("software")))
+    run(store.decide_write(req["request"], False, "Use the project name as the first tag on every note.", HUMAN))
+    learned = store.for_department("Software")[0]["learned_from_earlier_jobs"]
+    assert learned[0].startswith("Notes need a text field") and "first tag on every note" in learned[1] and learned[1].endswith("(the person)")
+
+
+def test_several_steps_go_in_one_request_and_a_trusted_operation_runs_without_asking(store, server):
+    store.propose(api_manifest(server), "", AGENT)
+    store.decide("demo", True, "", HUMAN)
+    store.set_key("demo", "token", "tok-123456", HUMAN)
+    req = run(store.request_write("demo", "create_note", [{"text": "one"}, {"text": "two"}], "Two notes.", "proj", "Software", Actor.agent("software")))
+    result = run(store.decide_write(req["request"], True, "", HUMAN))
+    assert result["ok"] and [d["created"]["text"] for d in result["data"]] == ["one", "two"] and result["steps_run"] == 2
+    store.set_trust("demo", "create_note", "proj", "Software", True, HUMAN)
+    ran = run(store.request_write("demo", "create_note", {"text": "three"}, "Third.", "proj", "Software", Actor.agent("software")))
+    assert ran["status"] == "ran" and ran["result"]["ok"]
+    other = run(store.request_write("demo", "create_note", {"text": "x"}, "Other dept.", "proj", "Mechanical", Actor.agent("mechanical")))
+    assert other["status"] == "waiting"  # trust is per department and project
+    with pytest.raises(PermissionDenied):
+        store.set_trust("demo", "create_note", "proj", "Software", True, AGENT)

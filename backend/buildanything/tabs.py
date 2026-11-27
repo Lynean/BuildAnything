@@ -242,6 +242,45 @@ def clean_reads(raw: Any) -> list[dict[str, str]]:
     return out[:20]
 
 
+SKIP_DIRS = {".venv", "node_modules", ".git", "retired", "__pycache__", ".pio", "dist", "build"}
+
+
+def similar_files(project_root: Path, pattern: str, limit: int = 6) -> list[str]:
+    """Project files of the same type as a tab's read that the tab doesn't find, such as robot/Desk/Desk.urdf when the
+    tab looks for robot/robot.urdf: the sign that the tab was written for another project's layout."""
+    suffix = Path(pattern.replace("*", "x")).suffix.lower()
+    if not suffix or suffix == ".x":
+        return []
+    root = project_root.resolve()
+    found = []
+    for path in root.rglob(f"*{suffix}"):
+        rel = path.relative_to(root)
+        if path.is_file() and not SKIP_DIRS.intersection(rel.parts) and not SECRET.search(rel.as_posix()):
+            found.append(rel.as_posix())
+            if len(found) >= limit:
+                break
+    return found
+
+
+def mismatches(app_root: Path, app_ledger: Ledger, project_root: Path) -> list[dict[str, Any]]:
+    """Approved tabs shown on this project that look for files in places this project doesn't use, while files of that
+    type exist elsewhere in it. The tab should follow the project, so this goes to the Service agent that made it,
+    not to the departments."""
+    out = []
+    for t in listing(app_root, app_ledger):
+        if not (t.get("approved_hash") and t["intact"] and project_root.name in t["projects"]):
+            continue
+        wrong = []
+        for r in reads_status(project_root, t.get("approved_reads") or []):
+            if r["found"] == 0:
+                similar = similar_files(project_root, r["path"])
+                if similar:
+                    wrong.append({"path": r["path"], "what": r.get("what", ""), "project_has": similar})
+        if wrong:
+            out.append({"tab": t["id"], "title": t.get("approved_title", t["id"]), "service": "Internal Service" if t.get("by") == "internal_service" else "External Service", "reads": wrong})
+    return out
+
+
 def briefs_due(app_root: Path, app_ledger: Ledger, project_root: Path, team: list[str]) -> list[dict[str, Any]]:
     """Departments that make files an approved tab on this project reads, where some of those files don't exist yet.
     Keyed by the tab's approved version, so a department hears again only when the tab changes."""
@@ -252,7 +291,7 @@ def briefs_due(app_root: Path, app_ledger: Ledger, project_root: Path, team: lis
         status = reads_status(project_root, t.get("approved_reads") or [])
         for department in sorted({r["made_by"] for r in status if r["made_by"] in team}):
             mine = [r for r in status if r["made_by"] == department]
-            if any(r["found"] == 0 for r in mine):
+            if any(r["found"] == 0 and not similar_files(project_root, r["path"], 1) for r in mine):  # brief only when nothing like it exists
                 out.append({"tab": t["id"], "version": t["approved_hash"], "department": department, "title": t.get("approved_title", t["id"]),
                             "shown_in": t.get("approved_department", ""), "summary": t.get("summary", ""), "reads": mine})
     return out

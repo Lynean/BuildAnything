@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import AgentChat, { type ChatMessage, type ChatPhoto } from "./AgentChat";
 import { call } from "./api";
 
-interface Message { role: string; text: string; from: string | null; early?: boolean; details?: string; internal?: boolean; }
+interface Message { role: string; text: string; from: string | null; early?: boolean; details?: string; internal?: boolean; choices?: string[]; }
 interface Thread { messages: Message[]; running: string | null; eventCount: number; }
 
 const ROLE: Record<string, string> = { Electrical: "Your one contact for Electrical", Mechanical: "Your one contact for Mechanical", Software: "Your one contact for Software", Procurement: "Your one contact for Procurement" };
@@ -36,7 +36,7 @@ export default function DepartmentChat({ projectId, department, compact = true, 
     try { setThread(await call<Thread>(path, "POST", { message: text, photos })); onChange?.(); } catch (e) { setError((e as Error).message); } finally { setSending((n) => n - 1); setPending((p) => p.filter((x) => x !== shown)); }
   };
 
-  const toChat = (m: Message): ChatMessage => m.role === "you" ? { from: "you", text: m.text } : m.role === "request" ? { from: "other", text: m.text, label: m.from === "Headquarters" ? "From Headquarters" : m.from === "You" ? "Your answer, passed on by Headquarters" : `Question from ${m.from}` } : { from: "agent", text: m.text, details: m.details, label: m.internal ? `${department} answering another department` : undefined };
+  const toChat = (m: Message): ChatMessage => m.role === "you" ? { from: "you", text: m.text } : m.role === "request" ? { from: "other", text: m.text, label: m.from === "Headquarters" ? "From Headquarters" : m.from === "You" ? "Your answer, passed on by Headquarters" : `Question from ${m.from}` } : { from: "agent", text: m.text, details: m.details, choices: m.choices, label: m.internal ? `${department} answering another department` : undefined };
   const earlier = (thread?.messages ?? []).filter((m) => m.early).map(toChat);
   const messages = (thread?.messages ?? []).filter((m) => !m.early && !m.internal).map(toChat);
   const between = (thread?.messages ?? []).filter((m) => !m.early && m.internal).map(toChat);

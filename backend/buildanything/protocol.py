@@ -35,6 +35,7 @@ class Report(BaseModel):
     safety: bool = Field(description="True if the RISK could hurt someone")
     for_person: str = Field(description="What the person reads: one or two plain sentences, at most 50 words. What changed and the one thing they need to do, if any. No tables, lists or links")
     details: str = Field(default="", description="Tables, sources and reasoning, in Markdown. Shown only if the person opens it. Empty if there's nothing to add")
+    choices: list[str] = Field(default_factory=list, description="When the person must decide something: 2 to 4 short answers they could send as they are, recommended first. They can also type their own. Empty otherwise")
 
 
 def command(kind: str, items: list[str] | None = None, done_when: str = "", reason: str = "") -> dict[str, Any]:

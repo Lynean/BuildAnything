@@ -280,6 +280,57 @@ def paused(events: list[dict[str, Any]]) -> bool:
     return False
 
 
+# ---- Office hours: agents answer the person at once, but new work waits until the person has finished a round ----
+
+QUIET_SECONDS = 60
+RELEASES = ("hq.send_now", "hq.paused", "limit.changed")  # these go through at once and release what's waiting
+OFFICE = ("hq.send_now", "hq.office")
+
+
+def _seconds(at: str) -> float:
+    from datetime import datetime
+
+    return datetime.fromisoformat(at).timestamp()
+
+
+def outbox_wait(events: list[dict[str, Any]], now: float | None = None) -> float | None:
+    """Seconds until Headquarters starts new work after the person's last action, 0 when it may start now, or None while
+    the person holds everything until they press Send. Running jobs carry on either way; chats are answered at once."""
+    import time
+
+    now = time.time() if now is None else now
+    last_action = next((e for e in reversed(events) if e["actor"]["kind"] == "human" and e["kind"] not in OFFICE), None)
+    released = next((e for e in reversed(events) if e["kind"] in RELEASES and e["actor"]["kind"] == "human"), None)
+    if last_action is None or (released is not None and _seconds(released["at"]) >= _seconds(last_action["at"])):
+        return 0.0
+    hold = next((e["data"]["hold"] for e in reversed(events) if e["kind"] == "hq.office"), False)
+    if hold:
+        return None
+    return max(0.0, QUIET_SECONDS - (now - _seconds(last_action["at"])))
+
+
+def outbox_view(ledger: Ledger) -> dict[str, Any]:
+    events = ledger.events()
+    wait = outbox_wait(events)
+    return {"wait": None if wait is None else round(wait), "hold": next((e["data"]["hold"] for e in reversed(events) if e["kind"] == "hq.office"), False),
+            "pending": wait != 0 and next_action(ledger) is not None, "quietSeconds": QUIET_SECONDS}
+
+
+def queue_followup(ledger: Ledger, department: str, text: str) -> None:
+    """The result of a step a department asked for, such as an approved script's output. It's delivered with any others
+    for that department in one message, at the department's next turn after the person's round."""
+    ledger.append(SYSTEM, "dept.followup_queued", department=department, text=text[:30000])
+
+
+def _followups_due(events: list[dict[str, Any]]) -> dict[str, list[str]]:
+    sent = {i for e in events if e["kind"] == "dept.followup_sent" for i in e["data"]["ids"]}
+    out: dict[str, list[str]] = {}
+    for e in events:
+        if e["kind"] == "dept.followup_queued" and e["id"] not in sent:
+            out.setdefault(e["data"]["department"], []).append(e["id"])
+    return out
+
+
 def next_action(ledger: Ledger, running: set[str] | None = None, busy: set[str] | None = None) -> str | None:
     """The next step Headquarters should take. Steps in running are already under way; departments in busy are working,
     so they get nothing new until they finish, while other departments can be started."""
@@ -294,6 +345,10 @@ def next_action(ledger: Ledger, running: set[str] | None = None, busy: set[str] 
     for sender, ids in _answers_to_deliver(events, done).items():
         if sender not in busy:
             return f"deliver:{','.join(ids)}"
+    for department, ids in _followups_due(events).items():
+        step = f"followup:{department}:{ids[-1]}"
+        if department not in busy and step not in running:
+            return step
     due = [(c, d) for c, d in changes.briefings_due(ledger, done) if d not in busy]
     if due:
         department = due[0][1]  # One message per department, however many changes were approved together.
@@ -457,6 +512,11 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
     if app_root.is_dir() and concept_approved(ledger):
         from . import tabideas
 
+        from . import tabs
+
+        for wrong in tabs.mismatches(app_root, Ledger(app_root), ledger.root):
+            first = wrong["reads"][0]
+            out.append({"kind": "tab_mismatch", "key": wrong["tab"], "text": f"The {wrong['title']} tab doesn't match this project's files: it looks for {first['path']}, but this project has {', '.join(first['project_has'][:3])}. Ask {wrong['service']} to update the tab to find this project's files.", "goto": wrong["service"]})
         ideas = tabideas.candidates(app_root, Ledger(app_root), ledger.root, shape.team(state))
         if ideas:
             idea = ideas[0]
@@ -484,7 +544,7 @@ def _needs(ledger: Ledger) -> list[dict[str, Any]]:
 
 def thread(events: list[dict[str, Any]], department: str) -> list[dict[str, Any]]:
     approved = next((i for i, e in enumerate(events) if e["kind"] == "concept.approved"), -1)
-    return [{"role": e["data"]["role"], "text": e["data"]["text"], "from": e["data"].get("from"), "at": e["at"], "early": i < approved, "details": e["data"].get("details", ""), "internal": bool(e["data"].get("internal")) or (e["data"]["role"] == "request" and e["data"].get("from") != "You")} for i, e in enumerate(events) if e["kind"] == "dept.message" and e["data"]["department"] == department]
+    return [{"role": e["data"]["role"], "text": e["data"]["text"], "from": e["data"].get("from"), "at": e["at"], "early": i < approved, "details": e["data"].get("details", ""), "choices": e["data"].get("choices", []), "internal": bool(e["data"].get("internal")) or (e["data"]["role"] == "request" and e["data"].get("from") != "You")} for i, e in enumerate(events) if e["kind"] == "dept.message" and e["data"]["department"] == department]
 
 
 def requests_view(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -504,9 +564,10 @@ def requests_view(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(out.values())
 
 
-def _say(ledger: Ledger, department: str, role: str, text: str, sender: str | None = None, details: str = "", internal: bool = False) -> None:
+def _say(ledger: Ledger, department: str, role: str, text: str, sender: str | None = None, details: str = "", internal: bool = False, choices: Sequence[str] = ()) -> None:
     actor = Actor.human() if role == "you" else SYSTEM
-    ledger.append(actor, "dept.message", department=department, role=role, text=text, **({"from": sender} if sender else {}), **({"details": details} if details else {}), **({"internal": True} if internal else {}))
+    picks = [c.strip()[:200] for c in choices if c.strip()][:4]
+    ledger.append(actor, "dept.message", department=department, role=role, text=text, **({"from": sender} if sender else {}), **({"details": details} if details else {}), **({"internal": True} if internal else {}), **({"choices": picks} if picks and not internal else {}))
 
 
 SCREEN_ACTION = re.compile(r"^(please\s+)?(approve|decline|reject|confirm|review|accept)\b.*\b(cad|fusion|proposals?|proposed|components?|connections?|limits?|parts?|tests?|wiring list)\b", re.I)
@@ -766,7 +827,7 @@ def _service_tool(ledger: Ledger, department: str) -> Any:
     from . import cloud
 
     async def use_service(connection: str, operation: str, params_json: str = "{}", why: str = "") -> dict[str, Any]:
-        """Use a connected outside service listed in services: run one of its operations by name with params as a JSON object. Reading runs straight away; an operation that changes something waits for the person's approval, so say why. When you only need to look, use an operation that reads: running a read-only script through an operation that changes something still waits for the person every time."""
+        """Use a connected outside service listed in services: run one of its operations by name with params as a JSON object. Reading runs straight away; an operation that changes something waits for the person's approval, so say why. When you only need to look, use an operation that reads: running a read-only script through an operation that changes something still waits for the person. To do several steps with an operation that changes something, such as a few scripts in a row, send them together as a JSON list of params objects (up to 8, run in order, stopping at the first failure): the person approves them once and you get every result back at once."""
         store = cloud.store_for(ledger.root.parent / "_app")
         if store is None:
             return {"error": "No services are connected."}
@@ -782,12 +843,45 @@ def _service_tool(ledger: Ledger, department: str) -> Any:
             if op and op.writes:
                 if not why.strip():
                     return {"error": "This changes something in the service, so give the person a reason in why."}
-                return store.request_write(connection, operation, params, why, ledger.root.name, department, Actor.agent(department.lower()))
+                return await store.request_write(connection, operation, params, why, ledger.root.name, department, Actor.agent(department.lower()))
             return await store.call(connection, operation, params, Actor.agent(department.lower()), ledger.root.name)
         except (ValueError, cloud.CloudError) as exc:
             return {"error": str(exc)}
 
     return use_service
+
+
+def _note_tool(ledger: Ledger, department: str) -> Any:
+    from . import cloud
+
+    def save_tool_note(connection: str, note: str) -> str:
+        """Keep something you learned about using a connected service, so you and every later job and project don't repeat
+        the mistake: an API quirk an error revealed, a method that works or one that breaks things. One fact per note,
+        in plain words, such as "Fusion: root.allJoints has no .count; use len()". It's shown with the service from then on."""
+        store = cloud.store_for(ledger.root.parent / "_app")
+        if store is None or not store.approved(connection):
+            return "There's no connected service by that name; see services."
+        return store.add_note(connection, department, note, Actor.agent(department.lower()))
+
+    return save_tool_note
+
+
+def _packet_tools(ledger: Ledger, gateway: Gateway) -> tuple[Any, Any]:
+    """Messages between devices are shared by Software and Electrical: either may define one or carry out an approved
+    change to one. Once interfaces are frozen, a breaking change needs the person's approved change request."""
+
+    async def define_packet(description: str) -> dict[str, Any]:
+        """Define one message between devices from a plain description, such as what the laptop sends to the board, or carry out an approved change to an existing one under the same name. Code validates it and generates the C, Python and TypeScript. Say whether it travels over serial, Wi-Fi or similar."""
+        try:
+            return {"saved": await interfaces.draft_packet(ledger, gateway, description)}
+        except interfaces.InterfaceError as exc:
+            return {"error": str(exc)}
+
+    async def check_messages() -> dict[str, Any]:
+        """Run the free automatic check of the message definitions again and see its result. It changes nothing. Use it to retry the check, because define_packet always saves a new version."""
+        return await ci.check_messages(ledger)
+
+    return define_packet, check_messages
 
 
 class PartProposal(BaseModel):
@@ -812,7 +906,7 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
     root = ledger.root
     if nested and not concept_approved(ledger):
         return [WebSearchTool()]  # Before the concept is agreed a department can advise, but it can't add anything to the design.
-    tools: list[Any] = [_service_tool(ledger, department)]
+    tools: list[Any] = [_service_tool(ledger, department), _note_tool(ledger, department)]
     if department == "Electrical":
         def set_needed_items(items_json: str) -> dict[str, Any]:
             """State everything this design needs to be built and safe, as a JSON object of short item names, each with the requirement key it serves or the engineering or safety reason it's needed, such as {"Six joint servos": "R1", "Servo power fuse": "Stops a stalled servo overheating the wiring"}. Include only what's really needed. A gate checks that each item gets chosen. Call it again with the full list to update it."""
@@ -901,7 +995,13 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
                 listed = "; ".join(f"{d} (board {c['board'] if c else '?'})" for d, c in boards.items())
                 firmware_writes["count"] -= 1  # nothing was written
                 return {"error": f"This project's board code already lives in: {listed}. To change it, use that device name. Only if this is a second, physically separate board, call again with new_board true."}
+            if name not in boards and new_board:
+                ledger.append(Actor.agent("electrical"), "firmware.second_board", device=name, board=board.strip())
             return await firmware.generate(ledger, gateway, root, name, board.strip(), goal, scope="lower")
+
+        def retire_device(device: str, why: str) -> dict[str, Any]:
+            """Retire a duplicate folder of the same board's code: it moves out of firmware/ (with its bench) into retired/, kept for reference. Use it when two folders hold code for one physical board; keep the one with the real, building code and say why."""
+            return firmware.retire_device(ledger, root, device, why, Actor.agent("electrical"))
 
         async def read_facts(part_number: str) -> dict[str, Any]:
             """Read the facts code needs to talk to a part, such as I2C addresses, SPI mode and active levels, from all of its uploaded documents. A person confirms them, and firmware uses them as constants."""
@@ -925,9 +1025,13 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
             name = device.strip().lower()
             if name not in firmware.devices(root):
                 return {"error": f"There's no device called {name}. Devices: {', '.join(firmware.devices(root)) or 'none yet'}."}
+            twins = next((g for g in firmware.duplicate_boards(root, firmware.separate_boards(ledger)) if name in g), None)
+            if twins:
+                bench_builds["count"] -= 1
+                return {"error": f"{', '.join(twins)} are all code for the same board. Retire the duplicate with retire_device first, so the bench tests the code that will be flashed."}
             return await benchwriter.build_bench(ledger, gateway, root, name)
 
-        tools += [dispute_check, set_needed_items, read_limits, read_facts, propose_components, draft_connections, group_circuit, write_firmware, build_bench, WebSearchTool(), *session.tools()]
+        tools += [dispute_check, set_needed_items, read_limits, read_facts, propose_components, draft_connections, group_circuit, write_firmware, build_bench, retire_device, *_packet_tools(ledger, gateway), WebSearchTool(), *session.tools()]
     elif department == "Mechanical":
         def propose_parts(parts: list[PartProposal]) -> dict[str, Any]:
             """Suggest parts for the person to add to the parts list, all in one call: list every part you're proposing now, each with its number, name, material, process, quantity and why it's needed. To change a part already listed, use raise_change_request."""
@@ -994,16 +1098,7 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
                 return {"error": "Keep the design under 100,000 characters."}
             return {"id": ledger.propose(Actor.agent("software"), "design_proposal", title=title.strip(), html=html)}
 
-        async def define_packet(description: str) -> dict[str, Any]:
-            """Define one message between devices from a plain description, such as what the laptop sends to the board. Code validates it and generates the C, Python and TypeScript. Say whether it travels over serial, Wi-Fi or similar."""
-            try:
-                return {"saved": await interfaces.draft_packet(ledger, gateway, description)}
-            except interfaces.InterfaceError as exc:
-                return {"error": str(exc)}
-
-        async def check_messages() -> dict[str, Any]:
-            """Run the free automatic check of the message definitions again and see its result. It changes nothing. Use it to retry the check, because define_packet always saves a new version."""
-            return await ci.check_messages(ledger)
+        define_packet, check_messages = _packet_tools(ledger, gateway)
 
         def run_command(device: str, command: list[str]) -> dict[str, Any]:
             """Run a build, code-generation or test command for one of your programs, from its folder in firmware/<device>/: the program and its arguments, such as ["gradlew.bat", "assembleDebug"], ["npm", "run", "build"] or ["generate_icons.py"]. It returns the output and the files it made. It must finish by itself, with no window. Only works once the person let the app run this program's code."""
@@ -1026,7 +1121,7 @@ def _lead_tools(ledger: Ledger, gateway: Gateway, department: str, services: Ser
                 return {"error": f"That's {MAX_CODE_WRITES} code writes in this reply. Report what's left as PARTIAL."}
             context = ("This is the Simulation department's code, not the product's. It builds and runs a simulation from the other departments' deliverables and leaves them unchanged: "
                        "load model files from mechanics/ and import the product's code from the other folders in firmware/ by adding them to the import path. "
-                       "Save every result under the project's simulation/results/<run name>/ (two folders up from here: ../../simulation/results/), as CSV or JSON data, PNG plots and screenshots, and GIF or MP4 recordings. "
+                       "Save every result under the project's simulation/results/<run name>/ (two folders up from here: ../../simulation/results/), as CSV or JSON data, PNG plots and screenshots, and GIF or MP4 recordings. Every run saves a recording of what happened (a GIF or MP4 of the scene), a summary.json of what it measured and an assumptions.json of what it assumed: the person watches runs on the Simulation screen from these files. "
                        "Every script must run to the end by itself with no window, and print a short summary of what it measured.\n\n")
             return await software.generate(ledger, gateway, root, SIM_DEVICE, context + goal)
 
@@ -1089,6 +1184,10 @@ def _act_on_report(ledger: Ledger, department: str, sent: dict[str, Any], report
     if report.type == "BUG" and any(n.owner != "Tool" for n in report.needs):
         report = report.model_copy(update={"type": "BLOCKED"})  # A real tool fault can't be solved by someone deciding something.
     filed = protocol.file_report(ledger, SYSTEM, department, sent, report, ci.evidence(ledger, department, gates.current_gate(state)))
+    if report.type == "DONE" and sent["type"] in ("TASK", "RECHECK") and (ledger.root.parent / "_app").is_dir():
+        from . import services as reception
+
+        reception.settle_asks(Ledger(ledger.root.parent / "_app"), ledger.root.name, department, "The department later finished its job without it.")
     if report.type == "RISK" and report.severity in ("medium", "high") and report.risk.strip():
         run = max([f["fields"]["run"] for f in state.of_type("finding")] or [0]) + 1
         ledger.propose(Actor.agent("verifier"), "finding", run=run, severity=report.severity, safety=report.safety, text=f"{department}: {report.risk.strip()}", related=[])
@@ -1125,6 +1224,20 @@ def _shared_context(ledger: Ledger, department: str, services: Services) -> dict
             "guidance_from_reception": "\n\n".join(e["data"]["text"] for e in events if e["kind"] == "service.note" and e["data"]["department"] == department)[-6000:] or "None."}
 
 
+FOLLOW_UP_DROPS = ("other_departments_latest", "project_files")
+
+
+def _follow_up_context(ledger: Ledger, department: str, services: Services) -> dict[str, Any]:
+    """For the result of a step the department itself asked for, such as an approved script's output: it is continuing
+    work it already knows, so it gets its own recent conversation, not the whole project again."""
+    ctx = _shared_context(ledger, department, services)
+    state = ctx["department_state"]
+    recent = [t for t in thread(ledger.events(), department) if not t["early"]][-6:]
+    return {**ctx, "briefing": "Follow-up: this is the result of a step you asked for, inside work you're already doing. The full project briefing and other departments' news are left out to save cost; look_up_project, project_files and read_department_reports have them if you need a detail.",
+            "department_state": {k: v for k, v in state.items() if k not in FOLLOW_UP_DROPS} if isinstance(state, dict) else state,
+            "requests": [], "earlier_discussion": "\n\n".join(f"{m['from'] or m['role']}: {m['text']}" for m in recent)}
+
+
 def _first_tool(department: str, message: str, tools: list[Any]) -> str | None:
     return "change_cad" if department == "Mechanical" and "no CAD model" in message and any(getattr(t, "__name__", "") == "change_cad" for t in tools) else None
 
@@ -1137,7 +1250,7 @@ def _out_of_turns(department: str) -> protocol.Report:
                            for_person="I ran out of steps for this job before finishing. What I saved is kept, and I'll continue in the next round.", details="")
 
 
-async def run_lead(ledger: Ledger, gateway: Gateway, department: str, message: str, services: Services, nested: bool = False, attachments: Sequence[Any] = (), sent: dict[str, Any] | None = None, internal: bool = False) -> str:
+async def run_lead(ledger: Ledger, gateway: Gateway, department: str, message: str, services: Services, nested: bool = False, attachments: Sequence[Any] = (), sent: dict[str, Any] | None = None, internal: bool = False, follow_up: bool = False) -> str:
     title = message.split("\n")[0] if message else "First proposal"
     async with jobs.slot(ledger, department, title, jobs.touches(ledger, department, message) if message else {jobs.UNKNOWN}, [message] if message else [], wait=not nested) as job:  # Read the project after any wait, so nothing is stale.
         tools = _lead_tools(ledger, gateway, department, services, nested)
@@ -1154,12 +1267,12 @@ async def run_lead(ledger: Ledger, gateway: Gateway, department: str, message: s
         ledger.append(SYSTEM, "command.sent", department=department, **sent)
         tier, turns = ROUTINE.get(sent["type"], (None, LEAD_TURNS)) if not attachments else (None, LEAD_TURNS)
         try:
-            reply: Any = await gateway.run(agent=LEADS[department], tools=tools, request_limit=turns, tier=tier, attachments=attachments, output_type=protocol.Report, first_tool=_first_tool(department, message, tools), values={**_shared_context(ledger, department, services), "message": message, "command": sent})
+            reply: Any = await gateway.run(agent=LEADS[department], tools=tools, request_limit=turns, tier=tier, attachments=attachments, output_type=protocol.Report, first_tool=_first_tool(department, message, tools), values={**(_follow_up_context if follow_up else _shared_context)(ledger, department, services), "message": message, "command": sent})
         except TurnLimitReached:
             reply = _out_of_turns(department)
         report = protocol.shorten(protocol.from_reply(reply))
         job.outcome = report.type
-        _say(ledger, department, "agent", report.for_person, details=report.details, internal=internal)
+        _say(ledger, department, "agent", report.for_person, details=report.details, internal=internal, choices=report.choices)
         _act_on_report(ledger, department, sent, report, nested)
     return report.for_person
 
@@ -1190,7 +1303,7 @@ async def run_clones(ledger: Ledger, gateway: Gateway, department: str, groups: 
         _act_on_report(ledger, department, sent, report, False)
     if finished:
         joined = protocol.shorten(finished[0][0].model_copy(update={"for_person": " ".join(r.for_person for r, _s in finished), "details": "\n\n".join(r.details for r, _s in finished if r.details)}))
-        _say(ledger, department, "agent", joined.for_person, details=joined.details)
+        _say(ledger, department, "agent", joined.for_person, details=joined.details, choices=joined.choices)
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome
@@ -1209,7 +1322,7 @@ def work_view(ledger: Ledger) -> dict[str, Any]:
     return {"departments": departments, "agents": current["agents"], "running": current["running"], "recent": jobs.recent(events)}
 
 
-async def talk_to_department(ledger: Ledger, gateway: Gateway, department: str, message: str, services: Services, attachments: Sequence[Any] = ()) -> str:
+async def talk_to_department(ledger: Ledger, gateway: Gateway, department: str, message: str, services: Services, attachments: Sequence[Any] = (), follow_up: bool = False) -> str:
     if department not in DEPARTMENTS:
         raise HeadquartersError("Unknown department.")
     if not shape.on_team(ledger.state(), department):
@@ -1219,7 +1332,7 @@ async def talk_to_department(ledger: Ledger, gateway: Gateway, department: str, 
     _say(ledger, department, "you", message.strip())
     if department in jobs.busy(ledger):
         _say(ledger, department, "request", f"{department} is finishing another job. Your message is next, and it'll answer as soon as that's done.", "Headquarters")
-    return await run_lead(ledger, gateway, department, message.strip(), services, attachments=attachments)
+    return await run_lead(ledger, gateway, department, message.strip(), services, attachments=attachments, follow_up=follow_up)
 
 
 async def talk_to_concept(ledger: Ledger, gateway: Gateway, message: str, services: Services) -> None:
@@ -1375,6 +1488,17 @@ def waive_research(ledger: Ledger, reason: str, actor: Actor) -> None:
 
 async def run_step(ledger: Ledger, gateway: Gateway, action: str, services: Services) -> None:
     state, events = ledger.state(), ledger.events()
+    if action.startswith("followup:"):
+        department = action.split(":")[1]
+        ids = _followups_due(events).get(department, [])
+        texts = [e["data"]["text"] for e in events if e["id"] in ids]
+        if not texts:
+            return
+        ledger.append(SYSTEM, "dept.followup_sent", department=department, ids=ids)
+        text = texts[0] if len(texts) == 1 else f"While you waited, {len(texts)} results came back:\n\n" + "\n\n---\n\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+        _say(ledger, department, "request", text, "Connections")
+        await run_lead(ledger, gateway, department, text, services, follow_up=True)
+        return
     if action == "concept":
         await talk_to_concept(ledger, gateway, "", services)
     elif action == "research":
@@ -1492,6 +1616,8 @@ def label_for(action: str) -> str:
         return "Saving parts' documents from their datasheet links"
     if action == "ci":
         return "Running the automatic checks"
+    if action.startswith("followup:"):
+        return f"{action.split(':')[1]} is continuing with the results it asked for"
     if action.startswith("gate_review:"):
         return f"Reviewing the design for the {gates.stage(action.split(':')[1])} stage"
     if action.startswith("relay:"):
@@ -1519,6 +1645,8 @@ def department_of(ledger: Ledger, action: str) -> str | None:
     """The department a step belongs to, if it's a department's own work. Those can run side by side."""
     if action.startswith("open:"):
         return action[5:]
+    if action.startswith("followup:"):
+        return action.split(":")[1]
     if action.startswith("drive:"):
         return action.split(":")[2]
     if action.startswith("brief_change:"):
@@ -1559,11 +1687,19 @@ async def advance(ledger: Ledger, gateway: Gateway, services: Services, guard: C
         return True
 
     try:
-        for _ in range(MAX_STEPS):
+        steps = 0
+        while steps < MAX_STEPS:
             for task in [t for t in running if t.done()]:
                 await finish(task)
             busy = {d for _a, d in running.values() if d} | jobs.busy(ledger)
             action = next_action(ledger, {a for a, _d in running.values()}, busy)
+            wait = outbox_wait(ledger.events()) if action is not None else 0.0
+            if action is not None and wait != 0:  # the person is mid-round: running jobs carry on, new ones wait
+                if wait is None and not running:
+                    return  # held until the person presses Send, which starts Headquarters again
+                await asyncio.sleep(min(wait or 5.0, 5.0))
+                continue
+            steps += 1
             if action is not None:
                 label = label_for(action)
                 department = department_of(ledger, action)

@@ -65,7 +65,7 @@ class Actor:
 HUMAN_ONLY = {
     "gate.approved", "record.confirmed", "record.rejected", "limit.changed", "test.result_accepted", "test.result_dismissed",
     "connector.saved", "connector.removed", "connector.approved", "autonomy.changed",
-    "debug.measurement", "check.closed", "budget.set", "release.created", "gate.imported", "finding.decided", "command.person", "compat.accepted", "requirement.clarified", "component.owned", "component.variant", "component.no_datasheet", "component.doc_missing", "assumption.checked", "bench.accepted", "bench.screen", "need.waived", "needs.none", "deviation.closed", "order.arrived", "test.result", "test.dependencies", "change.approved", "change.rejected", "change.reopened", "request.person_answered", "task.done", "software.tests", "software.autotest", "sim.code_allowed", "cad.trials_allowed", "scope.set", "flash.approved", "flash.restored", "concept.approved", "project.updated", "hq.retry", "research.waived", "packet.acked", "packet.removed", "link.answer", "link.routed", "link.closed", "software.step", "cad.kept", "cad.rolled_back", "cad.contact_allowed", "cad.synced", "cad.drawing", "shape.set", "shape.request_declined", "gate.criterion_met", "platform.converter_decided", "service.install_approved", "service.install_rejected", "service.ask_closed", "hq.paused", "service.tool_decided", "skill.decided", "handoff.reported", "skills.auto_set", "tab.decided", "tabs.scripts_allowed", "tab.shown", "conn.decided", "conn.key_set", "conn.write_decided", "conn.removed",
+    "debug.measurement", "check.closed", "budget.set", "release.created", "gate.imported", "finding.decided", "command.person", "compat.accepted", "requirement.clarified", "component.owned", "component.variant", "component.no_datasheet", "component.doc_missing", "assumption.checked", "bench.accepted", "bench.screen", "need.waived", "part.model_waived", "needs.none", "deviation.closed", "order.arrived", "test.result", "test.dependencies", "change.approved", "change.rejected", "change.reopened", "request.person_answered", "task.done", "software.tests", "software.autotest", "sim.code_allowed", "cad.trials_allowed", "scope.set", "flash.approved", "flash.restored", "concept.approved", "project.updated", "hq.retry", "research.waived", "packet.acked", "packet.removed", "link.answer", "link.routed", "link.closed", "software.step", "cad.kept", "cad.rolled_back", "cad.contact_allowed", "cad.synced", "cad.drawing", "shape.set", "shape.request_declined", "gate.criterion_met", "platform.converter_decided", "service.install_approved", "service.install_rejected", "service.ask_closed", "hq.paused", "project.disconnected", "hq.send_now", "hq.office", "service.tool_decided", "skill.decided", "handoff.reported", "skills.auto_set", "tab.decided", "tabs.scripts_allowed", "tab.shown", "conn.decided", "conn.key_set", "conn.write_decided", "conn.write_trust", "conn.removed",
 }
 
 # A model may suggest these checks but can never report their results.
@@ -144,6 +144,8 @@ class Ledger:
 
             skill = next((x for x in listing(self) if x["id"] == data.get("id")), None)
             delegated = auto_enabled(self) and bool(skill) and verified(skill) and skill["hash"] == data.get("hash")
+        if actor.kind == "delegated" and kind == "conn.write_decided" and data.get("approved"):
+            delegated = self._write_trusted(data.get("request"))  # the person chose to let this department run this operation without asking
         if kind in HUMAN_ONLY and actor.kind != "human" and not delegated:
             raise PermissionDenied(f"Only a person can write {kind}.")
         if kind in NO_AGENT and actor.kind == "agent":
@@ -152,6 +154,18 @@ class Ledger:
             allowed = AGENT_WRITES.get(actor.name, set())
             if data.get("type") not in allowed:
                 raise PermissionDenied(f"Agent {actor.name} cannot propose {data.get('type')} records.")
+
+    def _write_trusted(self, request_id: Any) -> bool:
+        events = self.events()
+        req = next((e["data"] for e in events if e["kind"] == "conn.write_requested" and e["id"] == request_id), None)
+        if req is None:
+            return False
+        on = False
+        for e in events:
+            d = e["data"]
+            if e["kind"] == "conn.write_trust" and e["actor"]["kind"] == "human" and (d["id"], d["operation"], d["project"], d["department"]) == (req["id"], req["operation"], req.get("project"), req.get("department")):
+                on = bool(d["on"])
+        return on
 
     def append(self, actor: Actor, kind: str, **data: Any) -> dict[str, Any]:
         self._authorize(actor, kind, data)

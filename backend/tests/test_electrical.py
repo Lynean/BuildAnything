@@ -176,6 +176,16 @@ def test_common_ground(led):
     assert statuses(led, "Common ground") == ["warn"]
 
 
+def test_a_motor_across_a_bridge_needs_no_ground_but_a_one_wire_part_does(led):
+    driver, motor, sensor = part(led, "DRV"), part(led, "MOTOR"), part(led, "SENSOR")
+    net(led, "GND", "ground", None, (driver, "G", "gnd", {}))
+    net(led, "M1", "signal", 5.0, (driver, "OUT1", "output", {}), (motor, "T1", "input", {}))
+    net(led, "M2", "signal", 5.0, (driver, "OUT2", "output", {}), (motor, "T2", "input", {}))
+    assert statuses(led, "Common ground") == ["pass"]
+    net(led, "S", "signal", 3.3, (driver, "OUT3", "output", {}), (sensor, "IN", "input", {}))
+    assert "SENSOR" in [r for r in compat.run_checks(led.state()) if r["rule"] == "Common ground"][0]["message"]
+
+
 def test_temperature(led):
     a = part(led, "A")
     param(led, a, "op_temp_c", min=10, max=30)

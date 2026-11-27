@@ -6,7 +6,7 @@ import DepartmentCapabilities from "./DepartmentCapabilities";
 import ToolTab, { useToolTabs } from "./ToolTab";
 
 interface Rec { id: string; status: string; fields: Record<string, any>; landed?: number | null; }
-interface PartGroup { number: string; current: Rec; superseded: Rec[]; }
+interface PartGroup { number: string; current: Rec; superseded: Rec[]; cad: "modelled" | "waived" | "loose" | "missing"; cadWaiver: string; }
 interface Check { part: string; check: string; status: string; reason: string; evidence: string | null; }
 interface Release { id: string; recipient: string; override: string; parts: { number: string; revision: string }[]; }
 interface View {
@@ -87,24 +87,27 @@ export function MechanicalLive() {
             <button disabled={!form.number.trim() || !form.name.trim() || !!busy} onClick={() => run("Saving", async () => { setView(await call<View>(`${base}/parts`, "POST", { number: form.number, name: form.name, material: form.material, process: form.process, qty: Number(form.qty) || 1, mass_g: num(form.mass), unit_cost: num(form.cost) })); setForm({ number: "", name: "", material: "", process: "", qty: "1", mass: "", cost: "" }); })}>Add part</button>
           </div>
           {view.parts.length > 0 && (
-            <table className="task-table"><thead><tr><th>Part</th><th>Name</th><th>Rev</th><th>Material</th><th>Qty</th><th>Mass</th><th>Cost</th><th>File</th><th /></tr></thead><tbody>
+            <table className="task-table"><thead><tr><th>Part</th><th>Name</th><th>Rev</th><th>Material</th><th>Qty</th><th>Mass</th><th>Cost</th><th>File</th><th>In CAD model</th><th /></tr></thead><tbody>
               {view.parts.flatMap((p) => {
                 const f = p.current.fields;
                 const rows = [
                   <tr key={p.current.id}>
                     <td className="mono">{p.number}</td><td>{f.name}</td><td>{f.revision}</td><td>{f.material || "–"}</td><td>{f.qty}</td><td className="mono">{f.mass_g ?? "–"}</td><td className="mono">{f.unit_cost ?? "–"}</td>
                     <td><label className="file-btn"><input type="file" accept=".step,.stp,.dxf,.stl,.pdf" aria-label={`Upload file for ${p.number}`} onChange={(e) => { const x = e.target.files?.[0]; if (x) upload(p.number, x); e.target.value = ""; }} />{f.file ? "Replace" : "Upload"}</label></td>
+                    <td>{p.cad === "modelled" ? <span className="pill">Yes</span> : p.cad === "loose" ? <span className="hint">Not needed (loose item)</span> : p.cad === "waived" ? <span className="hint" title={p.cadWaiver}>Not needed: {p.cadWaiver}</span> : (
+                      <><span className="pill warn">Missing</span> <button className="small" disabled={!!busy} onClick={() => { const reason = window.prompt(`Why doesn't ${p.number} need to be in the CAD model?`, ""); if (reason) run("Saving", async () => setView(await call<View>(`${base}/parts/${encodeURIComponent(p.number)}/no-model`, "POST", { reason }))); }}>Not needed</button></>
+                    )}</td>
                     <td><button className="small" onClick={() => { setRevising(revising === p.number ? null : p.number); setRev({ reason: "", material: f.material ?? "" }); }}>Revise</button></td>
                   </tr>,
                 ];
                 if (revising === p.number) rows.push(
-                  <tr key={`${p.number}-r`} className="param-row"><td colSpan={9}><div className="row">
+                  <tr key={`${p.number}-r`} className="param-row"><td colSpan={10}><div className="row">
                     <input placeholder="New material" aria-label="New material" value={rev.material} onChange={(e) => setRev((r) => ({ ...r, material: e.target.value }))} />
                     <input placeholder="Why is this changing?" aria-label="Reason for change" value={rev.reason} onChange={(e) => setRev((r) => ({ ...r, reason: e.target.value }))} />
                     <button className="primary" disabled={!rev.reason.trim() || !!busy} onClick={() => run("Saving", async () => { const r = await call<{ impact: { revision: string; reopened: string[]; alreadySentIn: string[] }; view: View }>(`${base}/parts/${p.number}/revise`, "POST", { reason: rev.reason, material: rev.material }); setView(r.view); setRevising(null); setNote(`${p.number} is now rev ${r.impact.revision}. Reopened: ${r.impact.reopened.join(", ")}.${r.impact.alreadySentIn.length ? ` The previous revision was already sent in ${r.impact.alreadySentIn.join(", ")}.` : ""}`); })}>Save revision</button>
                   </div></td></tr>,
                 );
-                p.superseded.forEach((s) => rows.push(<tr key={s.id} className="muted"><td className="mono">{p.number}</td><td>{s.fields.name}</td><td>{s.fields.revision}</td><td>{s.fields.material || "–"}</td><td colSpan={5}>Superseded</td></tr>));
+                p.superseded.forEach((s) => rows.push(<tr key={s.id} className="muted"><td className="mono">{p.number}</td><td>{s.fields.name}</td><td>{s.fields.revision}</td><td>{s.fields.material || "–"}</td><td colSpan={6}>Superseded</td></tr>));
                 return rows;
               })}
             </tbody></table>

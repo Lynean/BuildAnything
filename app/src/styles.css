@@ -415,6 +415,10 @@ pre.preview.short { max-height: 130px; margin-top: 4px; }
 .agent-send:disabled { background: var(--panel-2); color: var(--ink-3); }
 .agent-thinking { display: flex; align-items: center; gap: 4px; color: var(--ink-3); font-size: 13.5px; } .agent-thinking span { margin-left: 6px; }
 .agent-thinking i { width: 6px; height: 6px; border-radius: 50%; background: var(--ai); animation: agent-pulse 1.2s infinite; } .agent-thinking i:nth-child(2) { animation-delay: .2s; } .agent-thinking i:nth-child(3) { animation-delay: .4s; }
+.agent-choices { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 4px 0 2px; }
+.agent-choice { text-align: left; border: 1px solid var(--line, #d0d4dc); border-radius: 10px; padding: 7px 12px; background: transparent; color: inherit; cursor: pointer; font: inherit; max-width: 100%; }
+.agent-choice:hover { border-color: var(--ai); }
+.agent-choice b { display: inline-block; min-width: 1.4em; color: var(--ai); }
 @keyframes agent-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .agent-thinking i { animation: none; } }
 .hq-needs { margin-bottom: 16px; } .need { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 4px 0; } .need > b { color: var(--human); font-size: 13px; }

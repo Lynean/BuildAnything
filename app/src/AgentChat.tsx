@@ -3,7 +3,21 @@ import { ScreenChip, addScreenLinks } from "./Linked";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-export interface ChatMessage { from: "you" | "agent" | "other"; text: string; label?: string; details?: string; }
+export interface ChatMessage { from: "you" | "agent" | "other"; text: string; label?: string; details?: string; choices?: string[]; }
+
+// The options an agent offers: its own list, or a numbered list of 2 to 4 short lines ending its message.
+export function choicesOf(m: ChatMessage): string[] {
+  if (m.choices && m.choices.length) return m.choices.slice(0, 4);
+  const lines = m.text.trim().split(/\r?\n/).map((l) => l.trim());
+  const tail: { n: number; text: string }[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const hit = /^(\d)[.)]\s+(.+)$/.exec(lines[i]);
+    if (!hit) break;
+    tail.unshift({ n: Number(hit[1]), text: hit[2].replace(/\*\*/g, "").trim() });
+  }
+  const numbered = tail.every((t, i) => t.n === i + 1);
+  return numbered && tail.length >= 2 && tail.length <= 4 && tail.every((t) => t.text.length <= 160) ? tail.map((t) => t.text) : [];
+}
 
 export function Rendered({ text }: { text: string }) {
   // Department and screen names become shortcuts to that screen.
@@ -59,6 +73,16 @@ export default function AgentChat({ agent, role, messages, earlier, between, can
         {messages.map((m, i) => m.from === "you"
           ? <div className="bubble you" key={i}>{m.text}</div>
           : <div className={`bubble ${m.from}`} key={i}>{m.label && <div className="bubble-label">{m.label}</div>}<Rendered text={m.text} />{m.details && <details className="agent-earlier"><summary>Show more</summary><Rendered text={m.details} /></details>}</div>)}
+        {(() => {
+          const last = messages[messages.length - 1];
+          const options = last && last.from === "agent" && !thinking ? choicesOf(last) : [];
+          return options.length > 0 && (
+            <div className="agent-choices" role="group" aria-label="Choose an answer">
+              {options.map((c, i) => <button key={c} className="agent-choice" onClick={() => onSend(c)}><b>{i + 1}</b> {c}</button>)}
+              <button className="agent-choice" onClick={(e) => { const box = (e.currentTarget.closest(".agent-chat") as HTMLElement | null)?.querySelector("textarea"); box?.focus(); }}><b>…</b> Other: type your own answer</button>
+            </div>
+          );
+        })()}
         {messages.length === 0 && !thinking && <p className="hint">{empty ?? `${agent} will start here as soon as Headquarters has briefed it.`}</p>}
         {thinking && <div className="agent-thinking" role="status"><i /><i /><i /><span>{thinking}</span></div>}
       </div>

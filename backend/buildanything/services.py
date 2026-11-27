@@ -453,9 +453,20 @@ def _same_need(a: str, b: str) -> bool:
     return bool(x and y) and len(x & y) / min(len(x), len(y)) >= 0.6
 
 
-def asks(app_ledger: Ledger) -> list[dict[str, Any]]:
+def asks(app_ledger: Ledger, project: str = "") -> list[dict[str, Any]]:
+    """Open requests to the Service agents, the given project's first. They're requests, not approvals: each closes when a
+    Service agent answers it, its department later finishes the job, or the person closes it."""
     closed = {e["data"]["id"] for e in app_ledger.events() if e["kind"] in ("service.ask_closed", "service.ask_answered")}
-    return [{**e["data"], "id": e["id"], "at": e["at"]} for e in app_ledger.events() if e["kind"] == "service.asked" and e["id"] not in closed]
+    out = [{**e["data"], "id": e["id"], "at": e["at"]} for e in app_ledger.events() if e["kind"] == "service.asked" and e["id"] not in closed]
+    return sorted(out, key=lambda a: a["project"] != project) if project else out
+
+
+def settle_asks(app_ledger: Ledger, project: str, department: str, why: str) -> int:
+    """Closes a department's open requests once it has finished the work they were for."""
+    mine = [a for a in asks(app_ledger) if a["project"] == project and a["department"] == department]
+    for a in mine:
+        app_ledger.append(Actor.system("reception"), "service.ask_answered", id=a["id"], department=department, resolution=why)
+    return len(mine)
 
 
 def providers_of(capability: str) -> list[str]:

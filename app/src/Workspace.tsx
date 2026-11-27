@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import SimulationRuns from "./SimulationRuns";
 import DepartmentChat from "./DepartmentChat";
 import DepartmentCapabilities from "./DepartmentCapabilities";
 import ToolTab, { useToolTabs } from "./ToolTab";
@@ -131,7 +132,7 @@ export default function Workspace({ onOpenTroubleshooting, department = "Softwar
   const startSide = (e: React.PointerEvent<HTMLDivElement>) => { const total = widthOf(e.currentTarget), w0 = sideW; drag(e, "col", (dx) => fitSide(w0 - dx, total)); };
   const startFiles = (e: React.PointerEvent<HTMLDivElement>) => { const total = widthOf(e.currentTarget), w0 = filesW; drag(e, "col", (dx) => fitFiles(w0 + dx, total)); };
   const startChat = (e: React.PointerEvent<HTMLDivElement>) => { const h0 = chatH; drag(e, "row", (_dx, dy) => fitChat(h0 + dy)); };
-  const [view, setView] = useState<"Overview" | "Code">("Overview");
+  const [view, setView] = useState<"Runs" | "Overview" | "Code">(department === "Simulation" ? "Runs" : "Overview");
   const [version, setVersion] = useState(0);
   const [designs, setDesigns] = useState<{ id: string; title: string; html: string }[]>([]);
   const [design, setDesign] = useState<string | null>(null);
@@ -280,7 +281,8 @@ export default function Workspace({ onOpenTroubleshooting, department = "Softwar
         </aside>
         <div className="editor">
           <div className="file-tabs" role="tablist" aria-label="Open files">
-            <div className={`file-tab view-tab ${view === "Overview" ? "on" : ""}`}><button role="tab" aria-selected={view === "Overview"} onClick={() => setView("Overview")}>Overview</button></div>
+            {department === "Simulation" && <div className={`file-tab view-tab ${view === "Runs" ? "on" : ""}`}><button role="tab" aria-selected={view === "Runs"} onClick={() => setView("Runs")}>Runs</button></div>}
+            <div className={`file-tab view-tab ${view === "Overview" ? "on" : ""}`}><button role="tab" aria-selected={view === "Overview"} onClick={() => setView("Overview")}>{department === "Simulation" ? "Code" : "Overview"}</button></div>
             {ws.open.map((p) => (
               <div key={p} className={`file-tab ${view === "Code" && p === ws.active ? "on" : ""}`}>
                 <button role="tab" aria-selected={view === "Code" && p === ws.active} onClick={() => { update({ active: p }); setView("Code"); }}>{p.split("/").pop()}</button>
@@ -288,7 +290,9 @@ export default function Workspace({ onOpenTroubleshooting, department = "Softwar
               </div>
             ))}
           </div>
-          {view === "Overview" && device ? (
+          {view === "Runs" && projectId ? (
+            <div className="editor-scroll"><SimulationRuns projectId={projectId} version={version} /></div>
+          ) : view === "Overview" && device ? (
             <div className="editor-scroll"><SoftwareOverview projectId={projectId} device={device} version={version} onOpenFile={openFile} /></div>
           ) : file ? (
             <div className="editor-scroll">

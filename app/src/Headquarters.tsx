@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ScreenChip, Linked, go } from "./Linked";
-import { selectProject, selectedProject } from "./api";
+import { selectProject, selectedProject, useBusy } from "./api";
 import HqGlance from "./HqGlance";
 import TeamStory from "./TeamStory";
 import { STAGES } from "./data";
@@ -55,7 +55,8 @@ function JoinProject({ onJoined }: { onJoined: (p: Project) => void }) {
 }
 
 interface Need { goto?: string; kind: string; text: string; gate?: string; key?: string; }
-interface Hq { eventCount: number; running: string | null; needs: Need[]; conceptApproved: boolean; requests: { id: string; from: string; to: string; question: string; answer: string | null; status: string; reason?: string; route?: string }[]; }
+interface Outbox { wait: number | null; hold: boolean; pending: boolean; quietSeconds: number; }
+interface Hq { eventCount: number; running: string | null; outbox?: Outbox; needs: Need[]; conceptApproved: boolean; requests: { id: string; from: string; to: string; question: string; answer: string | null; status: string; reason?: string; route?: string }[]; }
 
 function TeamPanel({ p, project, setProject, busy, run, setNote }: { p: string; project: Project; setProject: (x: Project) => void; busy: string; run: (label: string, work: () => Promise<void>) => void; setNote: (t: string) => void }) {
   const [url, setUrl] = useState(project.git.remote ?? "");
@@ -213,6 +214,7 @@ export default function Headquarters() {
         {error && <p className="error" role="alert">{error}</p>}
         <div className="grid">
           {creating ? <NewProject onCreated={(p) => { setCreating(false); refreshList(); selectProject(p.id); }} /> : <section className="card"><h3>Start something new</h3><button className="primary" onClick={() => setCreating(true)}>New project</button><JoinProject onJoined={(p) => { refreshList(); selectProject(p.id); }} /></section>}
+          <DisconnectedProjects onReconnected={(id) => { refreshList(); selectProject(id); }} />
         </div>
       </div>
     );
@@ -260,6 +262,10 @@ export default function Headquarters() {
         <details className="hq-more">
           <summary aria-label="Saving, handoff and team">⋯</summary>
           <div className="hq-more-body">
+            <div className="decide"><button className="small" disabled={!!busy} title="Takes the project out of the app. Its folder stays on disk, untouched, and you can connect it again from the Headquarters start screen."
+              onClick={() => { if (window.confirm(`Disconnect ${project.meta.name} from the app? Nothing is deleted: its folder stays at ${project.id}, it's paused, and you can connect it again from the Headquarters start screen.`)) run("Disconnecting", async () => { await call(`${p}/disconnect`, "POST", { off: true }); try { localStorage.removeItem("ba.project"); } catch { /* optional */ } window.location.reload(); }); }}>Disconnect this project</button></div>
+            <span className="dim-text">{hq?.outbox?.hold ? "Holding new work until you press Send" : `New work starts ${hq?.outbox?.quietSeconds ?? 60} s after your last action`}</span>
+            <div className="decide"><button className="small" disabled={!!busy} title="For a long review: nothing new starts until you press Send." onClick={() => run("Saving", async () => { setProject(await call<Project>(`${p}/hq/hold`, "POST", { hold: !hq?.outbox?.hold })); setHq(await call<Hq>(`${p}/hq`)); })}>{hq?.outbox?.hold ? "Stop holding" : "Hold until I press Send"}</button></div>
             <span className={project.git.unsaved ? "warn-text" : "dim-text"}>{!project.git.available ? "Git isn't available" : project.git.unsaved ? `${project.git.unsaved} unsaved changes` : "All changes saved"}</span>
             <div className="decide">
               {project.git.available && project.git.unsaved > 0 && <button className="small" disabled={!!busy} onClick={() => run("Saving", async () => setProject(await call<Project>(`${p}/save`, "POST")))}>Save</button>}
@@ -277,6 +283,17 @@ export default function Headquarters() {
       {busy && <p className="busy" role="status">{busy}…</p>}
       {error && <p className="error" role="alert">{error}</p>}
       {note && <p className="note" role="status">{note}</p>}
+
+      {hq?.outbox && (hq.outbox.pending || hq.outbox.hold) && (
+        <div className="note outbox-bar" role="status">
+          <span>{hq.outbox.wait === null
+            ? "Holding new work for the departments until you press Send. Chats still answer at once."
+            : `Departments get your answers and approvals together, in ${Math.max(0, hq.outbox.wait)} s, once you've stopped for ${hq.outbox.quietSeconds} s. Chats still answer at once.`}</span>{" "}
+          <button className="small primary" disabled={!!busy} onClick={() => run("Sending", async () => { setProject(await call<Project>(`${p}/hq/send-now`, "POST")); setHq(await call<Hq>(`${p}/hq`)); })}>Send now</button>{" "}
+          <button className="small" disabled={!!busy} title="Hold: nothing new starts until you press Send, however long you take. Pause, Stop and spending changes still go through at once."
+            onClick={() => run("Saving", async () => { setProject(await call<Project>(`${p}/hq/hold`, "POST", { hold: !hq.outbox!.hold })); setHq(await call<Hq>(`${p}/hq`)); })}>{hq.outbox.hold ? "Stop holding" : "Hold"}</button>
+        </div>
+      )}
 
       {(hq?.running || (hq?.needs.length ?? 0) > 0) && (
         <section className="hq-needs" aria-label="What needs you">
@@ -349,5 +366,21 @@ export default function Headquarters() {
         </details>
       </div>
     </div>
+  );
+}
+
+
+// Projects taken out of the app: their folders are still on disk, and each can be connected again.
+function DisconnectedProjects({ onReconnected }: { onReconnected: (id: string) => void }) {
+  const [off, setOff] = useState<(Summary & { disconnected?: boolean })[]>([]);
+  const { busy, run } = useBusy();
+  useEffect(() => { call<(Summary & { disconnected?: boolean })[]>("/projects?include_disconnected=true").then((l) => setOff(l.filter((x) => x.disconnected))).catch(() => undefined); }, []);
+  if (off.length === 0) return null;
+  return (
+    <section className="card"><h3>Disconnected projects</h3>
+      <p className="hint">Taken out of the app; their folders are still on disk. Connecting one brings it back paused.</p>
+      <ul className="status-list">{off.map((x) => <li key={x.id}><span>{x.name ?? x.id} <span className="hint mono">{x.id}</span></span>
+        <button className="small" disabled={!!busy} onClick={() => run("Connecting", async () => { await call(`/projects/${x.id}/disconnect`, "POST", { off: false }); setOff((l) => l.filter((y) => y.id !== x.id)); onReconnected(x.id); })}>Connect again</button></li>)}</ul>
+    </section>
   );
 }

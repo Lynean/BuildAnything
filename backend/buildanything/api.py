@@ -201,7 +201,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
     @app.get("/api/projects/{project_id}/hq")
     def hq_status(project_id: str) -> dict[str, Any]:
         led = ledger(project_id)
-        return {**hq.status(led), "running": current_label(led, project_id)}
+        return {**hq.status(led), "running": current_label(led, project_id), "outbox": hq.outbox_view(led)}
 
     def hq_call(work) -> None:
         try:
@@ -248,6 +248,20 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
         """Pause or resume the project: while paused, running jobs finish and nothing new starts."""
         led = ledger(project_id)
         led.append(Actor.human(), "hq.paused", paused=bool(body.get("paused", True)))
+        return output(project_id, led)
+
+    @app.post("/api/projects/{project_id}/hq/send-now")
+    def hq_send_now(project_id: str) -> dict[str, Any]:
+        """Office hours: start what's waiting now instead of after the quiet spell."""
+        led = ledger(project_id)
+        led.append(Actor.human(), "hq.send_now")
+        return output(project_id, led)
+
+    @app.post("/api/projects/{project_id}/hq/hold")
+    def hq_hold(project_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """Office hours: hold new work until the person presses Send, for a long review."""
+        led = ledger(project_id)
+        led.append(Actor.human(), "hq.office", hold=bool(body.get("hold", True)))
         return output(project_id, led)
 
     @app.post("/api/projects/{project_id}/hq/waive-research")
@@ -306,6 +320,13 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             return files.content(ledger(project_id).root, path, start)
         except files.FilesError as exc:
             raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/api/projects/{project_id}/simulation/runs")
+    def simulation_runs(project_id: str) -> list[dict[str, Any]]:
+        """The runs saved under simulation/results/, newest first, with their recordings, pictures, results and assumptions."""
+        from . import simruns
+
+        return simruns.runs(ledger(project_id).root)
 
     @app.get("/api/projects/{project_id}/files/raw")
     def files_raw(project_id: str, path: str) -> Any:
@@ -431,16 +452,35 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
         hq_call(lambda: hq.mark_part_proposal(led, record_id, bool(body.get("accept")), Actor.human()))
         return output(project_id, led)
 
+    def disconnected() -> set[str]:
+        """Projects the person took out of the app. Their folders stay on disk, untouched, and can be connected again."""
+        state: dict[str, bool] = {}
+        for e in app_ledger.events():
+            if e["kind"] == "project.disconnected":
+                state[e["data"]["id"]] = e["data"]["off"]
+        return {k for k, off in state.items() if off}
+
     @app.get("/api/projects")
-    def list_projects() -> list[dict[str, Any]]:
+    def list_projects(include_disconnected: bool = False) -> list[dict[str, Any]]:
         if not root.exists():
             return []
-        found = []
+        found, off = [], disconnected()
         for path in sorted(root.iterdir()):
-            if not path.name.startswith("_") and (path / "ledger" / "events.jsonl").exists():
+            if not path.name.startswith("_") and (path / "ledger" / "events.jsonl").exists() and (include_disconnected or path.name not in off):
                 state = Ledger(path).state()
-                found.append({"id": path.name, "name": state.meta.get("name"), "currentGate": gates.current_gate(state)})
+                found.append({"id": path.name, "name": state.meta.get("name"), "currentGate": gates.current_gate(state), **({"disconnected": path.name in off} if include_disconnected else {})})
         return found
+
+    @app.post("/api/projects/{project_id}/disconnect")
+    def project_disconnect(project_id: str, body: dict[str, Any] | None = Body(default=None)) -> dict[str, Any]:
+        """Take a project out of the app, or bring it back. Nothing on disk is moved or deleted, and no agent works on it while it's out."""
+        if not (root / project_id / "ledger" / "events.jsonl").exists():
+            raise HTTPException(404, "Unknown project.")
+        off = (body or {}).get("off", True) is not False
+        if off:
+            Ledger(root / project_id).append(Actor.human(), "hq.paused", paused=True)  # nothing keeps running in the background
+        app_ledger.append(Actor.human(), "project.disconnected", id=project_id, off=off)
+        return {"id": project_id, "disconnected": off, "folder": str(root / project_id)}
 
     @app.post("/api/projects")
     async def create_project(body: ProjectIn) -> dict[str, Any]:
@@ -608,12 +648,13 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
         return {"provider": provider, "connector": connector, "secrets": secret_store}
 
     def project_roots() -> dict[str, Path]:
-        return {p.name: p for p in root.iterdir() if p.is_dir() and not p.name.startswith("_")}
+        off = disconnected()
+        return {p.name: p for p in root.iterdir() if p.is_dir() and not p.name.startswith("_") and p.name not in off}
 
     def services_view(project_id: str | None, refresh: bool = False) -> dict[str, Any]:
         reception.load_custom(app_ledger)
         project = project_roots().get(project_id or "")
-        open_asks = reception.asks(app_ledger)
+        open_asks = reception.asks(app_ledger, project.name if project else "")
         return {
             "used": reception.relevance(project, Ledger(project).events(), open_asks) if project else {},
             "toolProposals": [p | ({"found": reception.check_one(p["entry"], services_context())} if p["status"] == "waiting" else {}) for p in reception.tool_proposals(app_ledger)],
@@ -845,7 +886,7 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             raise HTTPException(400, str(exc)) from exc
 
     def connections_view() -> dict[str, Any]:
-        return {"connections": cloud_store.listing(), "requests": cloud_store.requests()[:40], "redirect": f"http://127.0.0.1:8787{cloud.REDIRECT_PATH}"}
+        return {"connections": cloud_store.listing(), "requests": cloud_store.requests()[:40], "trusts": cloud_store.trusts(), "redirect": f"http://127.0.0.1:8787{cloud.REDIRECT_PATH}"}
 
     @app.get("/api/connections")
     def connections_list() -> dict[str, Any]:
@@ -898,6 +939,12 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
 
         return HTMLResponse(f"<!doctype html><meta charset=utf-8><title>BuildAnything</title><body style='font:16px system-ui;background:#12161d;color:#d7dbe3;padding:40px'><p>{_html.escape(message)}</p></body>")
 
+    @app.post("/api/connections/{conn_id}/trust")
+    def connection_trust(conn_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """The person lets one department run one changing operation in one project without asking each time, or stops it."""
+        cloud_store.set_trust(conn_id, str(body.get("operation", "")), str(body.get("project", "")), str(body.get("department", "")), body.get("on") is True, Actor.human())
+        return connections_view()
+
     @app.post("/api/connections/requests/{request_id}/decide")
     async def connection_request_decide(request_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         """Only a person lets an agent's change go to an outside service, one request at a time."""
@@ -913,9 +960,12 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
             text = (f"The person {'approved' if approved else 'rejected'} your request to run {request['operation']} on {request['id']}."
                     + (f" Reason: {body.get('reason')}" if not approved and body.get("reason") else "")
                     + (f" It {'worked' if result.get('ok') else 'failed'}: {result.get('error') or reply}" if approved else "")
-                    + " Carry on with your work.")
+                    + " Carry on with your work."
+                    # so a fix the person asks for can be made to what was actually sent, not rewritten from memory
+                    + ("" if approved else "\n\nWhat you sent (params), to correct and send again:\n" + json.dumps(request.get("params"), ensure_ascii=False, indent=1)[:20000]))
             led = ledger(request["project"])
-            asyncio.create_task(guarded(request["project"], hq.talk_to_department(led, gateway(led), request["department"], text, services)))
+            hq.queue_followup(led, request["department"], text)  # delivered with any others in one message, after the person's round
+            kick(request["project"])
         return {**connections_view(), "result": result}
 
     @app.post("/api/projects/{project_id}/tabs/{tab_id}/service")
@@ -973,8 +1023,8 @@ def create_app(root: Path = DATA_ROOT, provider: ModelProvider | None = None, pa
         return {"handoffs": skillbook.handoffs(led, h["department"])}
 
     @app.post("/api/services/asks/{ask_id}/close")
-    def services_close_ask(ask_id: str) -> dict[str, bool]:
-        app_ledger.append(Actor.human(), "service.ask_closed", id=ask_id)
+    def services_close_ask(ask_id: str, body: dict[str, Any] | None = Body(default=None)) -> dict[str, bool]:
+        app_ledger.append(Actor.human(), "service.ask_closed", id=ask_id, reason=str((body or {}).get("reason", "")).strip()[:400])
         return {"ok": True}
 
     def service_messages(side: str) -> list[dict[str, Any]]:

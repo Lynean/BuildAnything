@@ -158,6 +158,15 @@ def move(ledger: Ledger, session_id: str, to: str, reason: str, actor: Actor) ->
     return _get(ledger, session_id)
 
 
+def clear_automatic(ledger: Ledger, title: str, device: str, why: str) -> list[str]:
+    """Closes the open sessions an automatic run opened (same title and program) once a later run of it no longer fails,
+    so a person never sees a troubleshooting item for a problem that's gone."""
+    gone = [s["id"] for s in sessions(ledger).values() if s["status"] == "open" and s["title"] == title and s.get("device") == device]
+    for session_id in gone:
+        ledger.append(Actor.system("debugging"), "debug.closed", id=session_id, resolution=why)
+    return gone
+
+
 def close(ledger: Ledger, session_id: str, resolution: str, actor: Actor) -> dict[str, Any]:
     _get(ledger, session_id)
     ledger.append(actor, "debug.closed", id=session_id, resolution=resolution)

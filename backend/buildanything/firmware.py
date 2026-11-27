@@ -291,7 +291,7 @@ def _block_problems(file: FileOut) -> list[str]:
         problems.append(f"{file.path} has no code blocks.")
     for block in file.blocks:
         if len(block.description.strip()) < 20 or not block.title.strip():
-            problems.append(f"{file.path}: a block needs a title and a real description.")
+            problems.append(f"{file.path}: \"{block.title}\" needs a title and a real description." if block.title.strip() else f"{file.path}: a block needs a title and a real description.")
         if not block.code.strip():
             problems.append(f"{file.path}: {block.title} has no code.")
         count = definitions(file.path, block.code)
@@ -311,10 +311,55 @@ def citation_problems(files: list[FileOut], known: set[str]) -> list[str]:
             for item in block.based_on:
                 if item.startswith("note:"):
                     if item[5:] not in known:
-                        problems.append(f"{file.path}: {item} is not a saved finding.")
+                        problems.append(f"{file.path}: \"{block.title}\" cites {item}, which is not a saved finding.")
                 elif CITES_PAGE.search(item):
-                    problems.append(f"{file.path}: cite \"{item}\" through a saved finding (note:...), after opening the page.")
+                    problems.append(f"{file.path}: \"{block.title}\" should cite \"{item}\" through a saved finding (note:...), after opening the page.")
     return problems
+
+
+def _names_block(problem: str, path: str, title: str) -> bool:
+    return bool(title.strip()) and (f'"{title}"' in problem or problem.startswith(f"{path}: {title} "))
+
+
+def salvage(root: Path, device: str, files: list[FileOut], problems: list[str]) -> tuple[list[FileOut], list[str]]:
+    """Keeps every block no problem names, so one bad block doesn't throw away a whole write. A failed edit to an existing
+    block keeps that block's saved code; a failed new block is left out. A problem about a whole file holds back that file,
+    and a problem that names no file (such as a layer or interface rule) holds back everything, as before.
+    Returns the files to save and the problems held back."""
+    if any(not any(p.startswith(f.path) for f in files) for p in problems):
+        return [], problems
+    base = root / "firmware" / device
+    kept: list[FileOut] = []
+    held: list[str] = []
+    for file in files:
+        mine = [p for p in problems if p.startswith(file.path)]
+        if not mine:
+            kept.append(file)
+            continue
+        if any(not any(_names_block(p, file.path, b.title) for b in file.blocks) for p in mine):
+            held += mine  # about the file as a whole
+            continue
+        target = base / file.path
+        old = {b.get("title", "").strip().lower(): b for b in parse(target.read_text(encoding="utf-8", errors="replace"))["blocks"]} if target.is_file() else {}
+        blocks, good = [], 0
+        for block in file.blocks:
+            if not any(_names_block(p, file.path, block.title) for p in mine):
+                blocks.append(block)
+                good += 1
+                continue
+            saved = old.get(block.title.strip().lower())
+            if saved is not None:
+                blocks.append(block.model_copy(update={"code": saved["code"], "description": saved.get("description") or block.description,
+                                                       "based_on": saved.get("based_on", []), "components": saved.get("components", [])}))
+        held += mine
+        if good:
+            kept.append(file.model_copy(update={"blocks": blocks}))
+    return kept, held
+
+
+def held_feedback(saved: list[str], held: list[str]) -> str:
+    return ("Saved the blocks that passed, in " + ", ".join(saved) + ". Mark those blocks unchanged and don't rewrite them. "
+            "Fix only what's below, and return just those blocks (with the rest of each file marked unchanged):\n" + "\n".join(held))
 
 
 def component_problems(files: list[FileOut], known: set[str]) -> list[str]:
@@ -532,6 +577,44 @@ def limits_text(state: ProjectState) -> str:
 def devices(root: Path) -> list[str]:
     base = root / "firmware"
     return sorted(p.name for p in base.iterdir() if p.is_dir()) if base.exists() else []
+
+
+def duplicate_boards(root: Path, separate: set[str] | None = None) -> list[list[str]]:
+    """Groups of board folders for the same board model, where nobody said they're physically separate boards: one board's
+    code split across two folders, so builds, the bench and flashing can each pick a different one."""
+    groups: dict[str, list[str]] = {}
+    for device in devices(root):
+        config = device_config(root, device)
+        if config and config["board"]:
+            groups.setdefault(config["board"], []).append(device)
+    return [names for names in groups.values() if len([n for n in names if n not in (separate or set())]) > 1]
+
+
+def separate_boards(ledger: Ledger) -> set[str]:
+    return {e["data"]["device"] for e in ledger.events() if e["kind"] == "firmware.second_board"}
+
+
+def retire_device(ledger: Ledger, root: Path, device: str, why: str, actor: Actor) -> dict[str, Any]:
+    """Moves a duplicate board folder (and its bench) out of firmware/ into retired/, keeping it for reference."""
+    import shutil
+    import time
+
+    name = device.strip().lower()
+    if name not in devices(root) or is_computer(root, name):
+        return {"error": f"There's no board folder called {name}."}
+    twins = next((g for g in duplicate_boards(root) if name in g), None)
+    if not twins:
+        return {"error": f"{name} is the only folder for its board, so it can't be retired."}
+    if len(why.strip()) < 15:
+        return {"error": "Say why this folder is the duplicate and which one is kept."}
+    target = root / "retired" / f"{name}-{time.strftime('%Y%m%d-%H%M%S')}"
+    target.mkdir(parents=True)
+    shutil.move(str(root / "firmware" / name), str(target / "firmware"))
+    bench = root / "bench" / name
+    if bench.exists():
+        shutil.move(str(bench), str(target / "bench"))
+    ledger.append(actor, "firmware.retired", device=name, kept=[d for d in twins if d != name], why=why.strip()[:400], moved_to=str(target.relative_to(root)).replace("\\", "/"))
+    return {"retired": name, "moved_to": str(target.relative_to(root)), "kept": [d for d in twins if d != name]}
 
 
 def current_code(root: Path, device: str) -> str:
@@ -829,6 +912,8 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, bo
     interfaces.regenerate(root, state)
     write_pins(root, state, device)
     devicefacts.write_header(root, state, device)
+    saved_paths: set[str] = set()  # blocks kept from attempts that partly passed
+    held_back: list[str] = []
     for attempt in range(3):
         output: FirmwareOut = await gateway.run(agent="firmware", values=values(feedback), output_type=FirmwareOut, tools=[*session.tools(), code_reader(root, device)], request_limit=40)
         merged, kept_problems = merge_unchanged(root, device, output.files)
@@ -839,11 +924,23 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, bo
             continue
         known = valid_note_ids(ledger.state())
         existing = [f["path"] for f in scan_workspace(root, device) if not f["generated"]]
-        problems = documentation_problems(output.files) + citation_problems(output.files, known) + component_problems(output.files, component_names(ledger.state())) + layer_problems(output.plan, output.files, existing, pin_defines(ledger.state()) if "driver" in layers else {}, layers, lower_plan(ledger, device) if scope == "app" else None) + (frozen_problems(ledger, root, device, output.files) if "mid" in layers else []) + [p for f in output.files for p in devicefacts.typed_values(ledger.state(), f.path, "\n".join(b.code for b in f.blocks))]
+
+        def check(files: list[FileOut]) -> list[str]:
+            return documentation_problems(files) + citation_problems(files, known) + component_problems(files, component_names(ledger.state())) + layer_problems(output.plan, files, existing, pin_defines(ledger.state()) if "driver" in layers else {}, layers, lower_plan(ledger, device) if scope == "app" else None) + (frozen_problems(ledger, root, device, files) if "mid" in layers else []) + [p for f in files for p in devicefacts.typed_values(ledger.state(), f.path, "\n".join(b.code for b in f.blocks))]
+
+        problems = check(output.files)
         if problems:
-            feedback = "\n".join(problems)
             attempts.append({"problem": "documentation", "details": problems})
+            kept, held = salvage(root, device, output.files, problems)
+            if kept and not check(kept):  # keep the good blocks now; only the failed ones go back to the writer
+                write_files(root, device, kept)
+                saved_paths.update(f.path for f in kept)
+                held_back[:] = held
+                feedback = held_feedback(sorted(saved_paths), held)
+            else:
+                feedback = "\n".join(problems)
             continue
+        held_back.clear()
         write_files(root, device, output.files)
         main = root / "firmware" / device / "src" / "main.cpp"
         if scope == "lower" and not has_app(root, device) and framework == "arduino":
@@ -868,6 +965,10 @@ async def generate(ledger: Ledger, gateway: Gateway, root: Path, device: str, bo
             return {"written": [f.path for f in output.files], "build": result, "attempts": len(attempts), "pagesOpened": len(session.opened), "findingsSaved": len(session.saved)}
         feedback = "The build failed. Return the complete corrected files.\n" + "\n".join(result["errors"])
     details = attempts[-1]["details"] if attempts else []
+    if saved_paths:  # part of the work passed and is saved: say what, and what's still to do
+        result = await asyncio.to_thread(build, root, device)
+        return {"written": sorted(saved_paths), "held_back": held_back or details, "build": result, "attempts": len(attempts), "pagesOpened": len(session.opened), "findingsSaved": len(session.saved),
+                "detail": "The blocks that passed are saved and built. The ones in held_back weren't saved: write them again with those problems fixed, marking the saved blocks unchanged."}
     return {"written": [], "build": {"ok": False, "ran": True, "errors": details, "detail": "The code was refused three times by the checks listed in errors. This isn't a tool fault, so don't report a BUG: fix what the errors say and call again, or report BLOCKED with what you need."}, "attempts": len(attempts), "pagesOpened": len(session.opened), "findingsSaved": len(session.saved)}
 
 
@@ -896,6 +997,8 @@ def build_and_track(ledger: Ledger, root: Path, device: str) -> dict[str, Any]:
         result = software.build(root, device, declared)
     else:
         result = build(root, device)
+    if result["ran"] and result["ok"]:
+        debugging.clear_automatic(ledger, "Build failed", device, "A later build succeeded.")
     if result["ran"] and not result["ok"]:
         debugging.open_or_repeat(ledger, "Build failed", "\n".join(result["errors"]) or "Build failed", "code", Actor.system("firmware"), device=device, where=device)
     return result

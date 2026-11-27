@@ -513,13 +513,63 @@ class Store:
 
     # ---- changes wait for the person ----
 
-    def request_write(self, conn_id: str, operation: str, params: dict[str, Any], why: str, project: str, department: str, actor: Actor) -> dict[str, Any]:
+    MAX_BATCH = 8
+
+    def trusted(self, conn_id: str, operation: str, project: str, department: str) -> bool:
+        """The person said this department may run this operation in this project without asking each time."""
+        state = False
+        for e in self.ledger.events():
+            d = e["data"]
+            if e["kind"] == "conn.write_trust" and (d["id"], d["operation"], d["project"], d["department"]) == (conn_id, operation, project, department):
+                state = bool(d["on"])
+        return state
+
+    def trusts(self) -> list[dict[str, str]]:
+        """Every operation the person currently lets a department run without asking."""
+        state: dict[tuple[str, str, str, str], bool] = {}
+        for e in self.ledger.events():
+            if e["kind"] == "conn.write_trust":
+                d = e["data"]
+                state[(d["id"], d["operation"], d["project"], d["department"])] = bool(d["on"])
+        return [{"connection": c, "operation": o, "project": p, "department": d} for (c, o, p, d), on in state.items() if on]
+
+    def set_trust(self, conn_id: str, operation: str, project: str, department: str, on: bool, actor: Actor) -> None:
+        self.ledger.append(actor, "conn.write_trust", id=conn_id, operation=operation, project=project, department=department, on=bool(on))
+
+    async def request_write(self, conn_id: str, operation: str, params: dict[str, Any] | list[dict[str, Any]], why: str, project: str, department: str, actor: Actor) -> dict[str, Any]:
+        """One request for one step, or for several steps in order (params as a list), so the person approves them once.
+        An operation the person trusts this department with runs straight away and returns its result."""
         m = self.approved(conn_id)
         op = next((o for o in (m.operations if m else []) if o.name == operation), None)
         if not m or not op:
             raise CloudError("Unknown connection or operation.")
+        if isinstance(params, list):
+            if not params or len(params) > self.MAX_BATCH or not all(isinstance(p, dict) for p in params):
+                raise CloudError(f"A batch is a list of 1 to {self.MAX_BATCH} parameter objects, run in order.")
+            params = {"batch": params}
         event = self.ledger.append(actor, "conn.write_requested", id=conn_id, operation=operation, params=params, why=why.strip()[:600], project=project, department=department)
+        if self.trusted(conn_id, operation, project, department):
+            result = await self._run_decided(event["id"], conn_id, operation, params, Actor.delegated("connections"), project, "Trusted by the person for this department.")
+            return {"request": event["id"], "status": "ran", "result": result}
         return {"request": event["id"], "status": "waiting"}
+
+    async def _run_decided(self, request_id: str, conn_id: str, operation: str, params: dict[str, Any], actor: Actor, project: str, reason: str) -> dict[str, Any]:
+        self.ledger.append(actor, "conn.write_decided", request=request_id, approved=True, reason=reason)
+        steps = params["batch"] if isinstance(params.get("batch"), list) else [params]
+        results = []
+        for step in steps:
+            result = await self.call(conn_id, operation, step, actor, project, allow_writes=True)
+            results.append(result)
+            if not result.get("ok"):
+                break  # later steps depend on earlier ones
+        if len(steps) == 1:
+            result = results[0]
+        else:
+            failed = next(((i, r) for i, r in enumerate(results) if not r.get("ok")), None)
+            result = {"ok": failed is None, "status": results[-1].get("status"), "data": [r.get("data") for r in results],
+                      "error": f"Step {failed[0] + 1} of {len(steps)}: {failed[1].get('error')}" if failed else None, "steps_run": len(results), "steps": len(steps)}
+        self.ledger.append(Actor.system("connections"), "conn.write_result", request=request_id, ok=result.get("ok"), status=result.get("status"), summary=json.dumps(result.get("data"), default=str)[:1500])
+        return result
 
     def requests(self) -> list[dict[str, Any]]:
         decided = {e["data"]["request"]: e for e in self.ledger.events() if e["kind"] == "conn.write_decided"}
@@ -536,12 +586,30 @@ class Store:
         req = next((r for r in self.requests() if r["request"] == request_id), None)
         if not req or req["status"] != "waiting":
             raise CloudError("That request isn't waiting.")
-        self.ledger.append(actor, "conn.write_decided", request=request_id, approved=approve, reason=reason.strip()[:600])
         if not approve:
+            self.ledger.append(actor, "conn.write_decided", request=request_id, approved=False, reason=reason.strip()[:600])
+            if len(reason.strip()) >= 20:
+                self.add_note(req["id"], "the person", f"Rejected a {req['operation']} request: {reason.strip()}", actor)
             return {"status": "rejected"}
-        result = await self.call(req["id"], req["operation"], req["params"], actor, req.get("project", ""), allow_writes=True)
-        self.ledger.append(Actor.system("connections"), "conn.write_result", request=request_id, ok=result.get("ok"), status=result.get("status"), summary=json.dumps(result.get("data"), default=str)[:1500])
-        return result
+        return await self._run_decided(request_id, req["id"], req["operation"], req["params"], actor, req.get("project", ""), reason.strip()[:600])
+
+    # ---- notes: what agents and the person learned about using a connection ----
+
+    MAX_NOTES = 20
+
+    def add_note(self, conn_id: str, by: str, note: str, actor: Actor) -> str:
+        """Keeps something learned about using this connection, such as an API quirk found from an error, for every later
+        job and project that uses it."""
+        text = " ".join(note.split())[:500]
+        if len(text) < 15:
+            return "Say what you learned, specifically."
+        if any(n["note"].lower() == text.lower() for n in self.notes(conn_id)):
+            return "That's already noted."
+        self.ledger.append(actor, "conn.note", id=conn_id, by=by, note=text)
+        return "Noted. Every job that uses this connection will see it."
+
+    def notes(self, conn_id: str) -> list[dict[str, str]]:
+        return [{"by": e["data"]["by"], "note": e["data"]["note"]} for e in self.ledger.events() if e["kind"] == "conn.note" and e["data"]["id"] == conn_id][-self.MAX_NOTES:]
 
     # ---- views ----
 
@@ -570,7 +638,9 @@ class Store:
             m = c["approved"]
             if m and department in m["departments"]:
                 hollow = self.returns_nothing(m["id"])
+                learned = self.notes(m["id"])
                 out.append({"connection": m["id"], "name": m["name"], "summary": m["summary"], "ready": c["state"] == "connected",
+                            **({"learned_from_earlier_jobs": [f"{n['note']} ({n['by']})" for n in learned]} if learned else {}),
                             "operations": [{"name": o["name"], "description": o["description"], "changes_something": o["writes"], "params": {p["name"]: f"{p['type']}{'' if p['required'] else ', optional'}: {p['description']}" for p in o["params"]},
                                             **({"warning": "Its recent calls succeeded but sent nothing back. It still works for things it does on this computer: to get results, make what it runs save them to a file in the project folder (such as mechanics/cad/ for a URDF export, or a JSON file of measurements), then read that file."} if o["name"] in hollow else {})} for o in m["operations"]]})
         return out

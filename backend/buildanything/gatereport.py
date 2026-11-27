@@ -118,9 +118,14 @@ def _mechanical_design(ledger: Ledger, state: ProjectState) -> list[Blocker]:
     if waiting:
         out.append((YOU, f"Add or dismiss {waiting} suggested {_plural(waiting, 'part', 'parts')} on the Mechanical screen."))
     modelled = modelled_parts(ledger)
-    unmodelled = [p["fields"]["number"] for p in parts if not designneeds.is_purchased(p) and not designneeds.is_owned(p) and not p["fields"].get("file") and p["fields"]["number"] not in modelled]
-    if unmodelled:
-        out.append(("Mechanical", f"These parts have no CAD model yet: {', '.join(unmodelled)}."))
+    waived = designneeds.model_waivers(ledger)
+    missing = [p for p in parts if not p["fields"].get("file") and p["fields"]["number"] not in modelled and p["fields"]["number"] not in waived and not designneeds.is_loose(p)]
+    made = [p["fields"]["number"] for p in missing if not designneeds.is_purchased(p) and not designneeds.is_owned(p)]
+    bought = [p["fields"]["number"] for p in missing if p["fields"]["number"] not in made]
+    if made:
+        out.append(("Mechanical", f"These parts have no CAD model yet: {', '.join(made)}."))
+    if bought:  # a bought motor or battery still takes space and must fit its mount, so the whole product is checked, not just the printed parts
+        out.append(("Mechanical", f"These bought or existing parts aren't in the CAD model yet: {', '.join(bought)}. Add each as the maker's CAD model or a block at its datasheet size, placed where it mounts, so fits and clearances can be checked; the person can waive one that really needs none."))
     if parts and not designneeds.assembly_plan(state) and not designneeds.declared_none(ledger, "Mechanical"):
         out.append(("Mechanical", "List every joint and assembly of the complete product with set_assemblies, so the parts can be checked against the whole design and not just a test piece."))
     missing_parts = designneeds.uncovered(state, parts)
@@ -314,6 +319,8 @@ def _design_review(ledger: Ledger, state: ProjectState) -> list[Blocker]:
     else:
         out = _electrical_design(ledger, state) + _mechanical_design(ledger, state) + _procurement(ledger, state) + _code_exists(ledger, state) + ci.tool_problems(ledger) + _serious_findings(ledger, state)
     out += _program_checks(ledger, state)
+    for twins in firmware.duplicate_boards(ledger.root, firmware.separate_boards(ledger)):
+        out.append(("Electrical", f"firmware/{' and firmware/'.join(twins)} are code for the same board. Keep the one with the real code and retire the other with retire_device."))
     if not traceability.view(ledger)["total"]:
         out.append((YOU, "Confirm the requirements."))
     out += _tests_written(ledger) + _tests_of_stage(ledger, "design", "design-stage")

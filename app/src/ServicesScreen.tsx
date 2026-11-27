@@ -88,6 +88,12 @@ export default function ServicesScreen({ side }: { side: "external" | "internal"
     run(approve ? "Approving" : "Rejecting", async () => setSkills(await call<Skill[]>(`/skills/${s.id}/decide`, "POST", { approve, reason, project: projectId })));
   };
 
+  const closeAsk = (a: Ask) => {
+    const reason = window.prompt(`Close this request from ${a.department}? Optionally say why (for example, it's solved).`, "");
+    if (reason === null) return;
+    run("Closing", async () => { await call(`/services/asks/${a.id}/close`, "POST", { reason }); await load(); });
+  };
+
   const chat: ChatMessage[] = messages.map((m) => ({ from: m.role === "you" ? "you" : "agent", text: m.text }));
   if (sending) chat.push({ from: "you", text: sending });
   const requests = side === "internal" ? (view?.requests ?? []) : [];
@@ -141,12 +147,22 @@ export default function ServicesScreen({ side }: { side: "external" | "internal"
           <div className="row"><button className="primary" disabled={!!busy} onClick={() => decideSkill(s, true)}>Approve and give to {s.departments.join(", ")}</button><button disabled={!!busy} onClick={() => decideSkill(s, false)}>Reject</button></div>
         </div>
       ))}
-      {(view?.asks ?? []).length > 0 && (
-        <div className="note"><b>Departments are asking for tools:</b>
-          <ul>{view!.asks.map((a) => <li key={a.id}><b>{a.department}</b> ({a.project}): {a.capability}. <span className="hint">{a.why}</span></li>)}</ul>
-          <span className="hint">Ask {SIDES[side].title} below which tool would provide it.</span>
-        </div>
-      )}
+      {(view?.asks ?? []).length > 0 && (() => {
+        const all = view!.asks;
+        const here = all.filter((a) => a.project === projectId);
+        const elsewhere = all.filter((a) => a.project !== projectId);
+        const item = (a: Ask) => (
+          <li key={a.id}><b>{a.department}</b>{a.project !== projectId ? ` (${a.project})` : ""}: {a.capability}. <span className="hint">{a.why}</span>{" "}
+            <button className="small" disabled={!!busy} onClick={() => closeAsk(a)}>Close</button></li>
+        );
+        return (
+          <div className="note"><b>Requests from departments to {SIDES[side].title}</b>
+            <p className="hint">These aren't waiting for your approval. A department asked for a tool it lacked; each request closes when {SIDES[side].title} answers it, its department later finishes the job, or you close it. Ask below which tool would provide one.</p>
+            {here.length > 0 ? <ul>{here.map(item)}</ul> : <p className="hint">None from this project.</p>}
+            {elsewhere.length > 0 && <details><summary>{elsewhere.length} from other projects</summary><ul>{elsewhere.map(item)}</ul></details>}
+          </div>
+        );
+      })()}
 
       {side === "external" && (
         <p className="hint">Approving verified Skills automatically: {autoSkills ? "on" : "off"}. Change it in <ScreenChip screen="Settings">Settings</ScreenChip>.</p>

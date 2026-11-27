@@ -708,3 +708,14 @@ def test_a_mutual_need_the_person_already_settled_is_not_asked_again(tmp_path):
     view = hq.requests_view(led.events())
     earlier = next(r for r in reversed(view) if r["status"] == "answered" and r["question"].startswith("Software and Electrical each need the other"))
     assert earlier["answer"] == "Electrical goes first."
+
+
+def test_a_program_with_no_tests_yet_is_not_a_failure(tmp_path, monkeypatch):
+    led = Ledger(tmp_path / "p")
+    base = led.root / "firmware" / "simulation"
+    base.mkdir(parents=True)
+    (base / "sim.py").write_text("print('hi')\n")
+    monkeypatch.setattr(software, "device_python", lambda root, device, install=False: (sys.executable, ""))
+    result = software.run_tests(led, led.root, "simulation", True, Actor.human())
+    assert not result["ok"] and result.get("no_tests") and result["summary"] == "There are no tests yet."
+    assert not any(e["kind"] == "debug.opened" for e in led.events())

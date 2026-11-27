@@ -101,9 +101,14 @@ class ImportIn(BaseModel):
 def view(led: Ledger) -> dict[str, Any]:
     state = led.state()
     by_number = mech.parts_by_number(state)
+    from . import designneeds, gatereport
+
+    modelled, waived = gatereport.modelled_parts(led), designneeds.model_waivers(led)
     parts = []
     for number, revisions in by_number.items():
-        parts.append({"number": number, "current": revisions[-1], "superseded": revisions[:-1]})
+        current = revisions[-1]
+        cad = "modelled" if number in modelled or current["fields"].get("file") else "waived" if number in waived else "loose" if designneeds.is_loose(current) else "missing"
+        parts.append({"number": number, "current": current, "superseded": revisions[:-1], "cad": cad, "cadWaiver": waived.get(number, "")})
     return {
         "parts": parts, "checks": list(mech.checks_state(led).values()), "rollup": mech.rollup(led, state), "releases": mech.releases(led),
         "orders": proc.orders_view(state), "imported": state.of_type("imported_item"), "spent": round(state.spent_usd, 6), "limit": state.limit_usd,
@@ -121,6 +126,20 @@ def register(app: FastAPI, get_ledger: Callable[[str], Ledger], get_gateway: Cal
     def add_part(project_id: str, body: PartIn) -> dict[str, Any]:
         led = get_ledger(project_id)
         mech.add_part(led, body.model_dump(), Actor.human())
+        return view(led)
+
+    @app.post(prefix + "/parts/{number}/no-model")
+    def waive_part_model(project_id: str, number: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The person says this part needs no body in the CAD model, and why."""
+        from . import designneeds
+
+        led = get_ledger(project_id)
+        if number not in mech.parts_by_number(led.state()):
+            raise HTTPException(404, "Part not found.")
+        try:
+            designneeds.waive_model(led, number, str(body.get("reason", "")), Actor.human())
+        except designneeds.NeedsError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return view(led)
 
     @app.post(prefix + "/parts/{number}/revise")
